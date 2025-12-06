@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D IC Thermal Simulator</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css"
+    />
+    <style>
+      body {
+        background: #0b1224;
+        color: #e9edf5;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 1rem;
+        min-height: 100vh;
+      }
+      #scene {
+        width: 100%;
+        height: 80vh;
+        background: #0f172a;
+        border-radius: 12px;
+      }
+      .status {
+        font-family: "Fira Code", "SFMono-Regular", monospace;
+        background: #0f172a;
+        padding: 0.75rem;
+        border-radius: 8px;
+      }
+      .hotspot-row {
+        display: flex;
+        gap: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <section>
+        <hgroup>
+          <h1>3D IC Thermal Lab</h1>
+          <p>GPU-accelerated finite-difference solver for stacked die thermal maps.</p>
+        </hgroup>
+        <form id="sim-form">
+          <label>Grid (x, y, z)
+            <input type="text" id="grid" value="32,32,16" />
+          </label>
+          <label>Iterations
+            <input type="number" id="iterations" value="150" min="1" max="5000" />
+          </label>
+          <label>Diffusion constant (m²/s)
+            <input type="number" id="diffusion" value="1e-5" step="1e-6" />
+          </label>
+          <label>Δt (s)
+            <input type="number" id="dt" value="5e-3" step="1e-3" />
+          </label>
+          <label>Δx (m)
+            <input type="number" id="dx" value="1e-3" step="1e-4" />
+          </label>
+          <label>Ambient (K)
+            <input type="number" id="ambient" value="300" />
+          </label>
+          <details>
+            <summary>Hotspots</summary>
+            <div id="hotspots"></div>
+            <button id="add-hotspot" type="button">Add hotspot</button>
+          </details>
+          <button type="submit">Run simulation</button>
+        </form>
+        <article class="status">
+          <div id="status">Backend: -</div>
+          <div id="range">Range: -</div>
+        </article>
+        <p>
+          Uses CuPy on DGX for GPU acceleration. Rendered with three.js instancing for
+          smooth interaction on browsers.
+        </p>
+      </section>
+      <section>
+        <div id="scene"></div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.157/build/three.min.js"></script>
+    <script>
+      const sceneEl = document.getElementById('scene');
+      const statusEl = document.getElementById('status');
+      const rangeEl = document.getElementById('range');
+      const hotspotContainer = document.getElementById('hotspots');
+      const addHotspotBtn = document.getElementById('add-hotspot');
+
+      let scene, camera, renderer, instancedMesh;
+
+      function createRenderer() {
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(sceneEl.clientWidth, sceneEl.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        sceneEl.innerHTML = '';
+        sceneEl.appendChild(renderer.domElement);
+      }
+
+      function createScene() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color('#0f172a');
+        camera = new THREE.PerspectiveCamera(
+          45,
+          sceneEl.clientWidth / sceneEl.clientHeight,
+          0.1,
+          1000
+        );
+        camera.position.set(2.5, 2.5, 3.5);
+        camera.lookAt(0, 0, 0);
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+        directional.position.set(2, 2, 3);
+        scene.add(ambient, directional);
+      }
+
+      function buildMesh(nx, ny, nz, temperatures) {
+        if (instancedMesh) scene.remove(instancedMesh);
+        const geometry = new THREE.BoxGeometry(1 / nx, 1 / ny, 1 / nz);
+        const material = new THREE.MeshPhongMaterial({ vertexColors: true });
+        const count = nx * ny * nz;
+        instancedMesh = new THREE.InstancedMesh(geometry, material, count);
+        const dummy = new THREE.Object3D();
+        const color = new THREE.Color();
+
+        let min = Infinity, max = -Infinity;
+        temperatures.forEach(t => { min = Math.min(min, t); max = Math.max(max, t); });
+        const range = max - min || 1;
+
+        let idx = 0;
+        for (let z = 0; z < nz; z++) {
+          for (let y = 0; y < ny; y++) {
+            for (let x = 0; x < nx; x++) {
+              const t = temperatures[idx++];
+              const normalized = (t - min) / range;
+              color.setHSL((2/3) * (1 - normalized), 1.0, 0.5);
+              instancedMesh.setColorAt(idx - 1, color);
+
+              dummy.position.set(
+                (x / nx) - 0.5 + 1/(2*nx),
+                (y / ny) - 0.5 + 1/(2*ny),
+                (z / nz) - 0.5 + 1/(2*nz)
+              );
+              dummy.updateMatrix();
+              instancedMesh.setMatrixAt(idx - 1, dummy.matrix);
+            }
+          }
+        }
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        scene.add(instancedMesh);
+        statusEl.textContent = `Backend: ${temperatures.length ? 'ready' : '-'}`;
+        rangeEl.textContent = `Range: ${min.toFixed(2)} K → ${max.toFixed(2)} K`;
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        if (instancedMesh) {
+          instancedMesh.rotation.y += 0.0015;
+          instancedMesh.rotation.x += 0.0006;
+        }
+        renderer.render(scene, camera);
+      }
+
+      async function runSimulation(evt) {
+        evt.preventDefault();
+        const [nx, ny, nz] = document.getElementById('grid').value.split(',').map(n => parseInt(n.trim(), 10));
+        const body = {
+          nx, ny, nz,
+          iterations: parseInt(document.getElementById('iterations').value, 10),
+          diffusion: parseFloat(document.getElementById('diffusion').value),
+          dt: parseFloat(document.getElementById('dt').value),
+          dx: parseFloat(document.getElementById('dx').value),
+          ambient: parseFloat(document.getElementById('ambient').value),
+          hotspots: collectHotspots()
+        };
+        statusEl.textContent = 'Running on GPU/CPU...';
+        const res = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          statusEl.textContent = 'Simulation failed';
+          const error = await res.text();
+          alert(error);
+          return;
+        }
+        const data = await res.json();
+        statusEl.textContent = `Backend: ${data.backend}`;
+        rangeEl.textContent = `Range: ${data.min.toFixed(2)} K → ${data.max.toFixed(2)} K`;
+        buildMesh(data.nx, data.ny, data.nz, data.temperature);
+      }
+
+      function collectHotspots() {
+        return Array.from(hotspotContainer.children).map(row => {
+          const [x, y, z, t] = row.querySelectorAll('input');
+          return { x: parseInt(x.value, 10), y: parseInt(y.value, 10), z: parseInt(z.value, 10), temperature: parseFloat(t.value) };
+        });
+      }
+
+      function addHotspotRow(values = {x:16, y:16, z:8, temperature:380}) {
+        const row = document.createElement('div');
+        row.className = 'hotspot-row';
+        row.innerHTML = `
+          <input type="number" value="${values.x}" title="x" min="0" style="width:20%" />
+          <input type="number" value="${values.y}" title="y" min="0" style="width:20%" />
+          <input type="number" value="${values.z}" title="z" min="0" style="width:20%" />
+          <input type="number" value="${values.temperature}" title="temperature" style="width:30%" />
+          <button type="button" aria-label="Remove">✕</button>`;
+        row.querySelector('button').addEventListener('click', () => row.remove());
+        hotspotContainer.appendChild(row);
+      }
+
+      addHotspotBtn.addEventListener('click', () => addHotspotRow());
+      document.getElementById('sim-form').addEventListener('submit', runSimulation);
+
+      function handleResize() {
+        if (!renderer || !camera) return;
+        renderer.setSize(sceneEl.clientWidth, sceneEl.clientHeight);
+        camera.aspect = sceneEl.clientWidth / sceneEl.clientHeight;
+        camera.updateProjectionMatrix();
+      }
+      window.addEventListener('resize', handleResize);
+
+      // bootstrap
+      createRenderer();
+      createScene();
+      animate();
+      addHotspotRow();
+
+      fetch('/api/example').then(r => r.json()).then(cfg => {
+        document.getElementById('grid').value = `${cfg.nx},${cfg.ny},${cfg.nz}`;
+        document.getElementById('iterations').value = cfg.iterations;
+        document.getElementById('diffusion').value = cfg.diffusion;
+        document.getElementById('dt').value = cfg.dt;
+        document.getElementById('dx').value = cfg.dx;
+        document.getElementById('ambient').value = cfg.ambient;
+        hotspotContainer.innerHTML = '';
+        cfg.hotspots.forEach(hs => addHotspotRow(hs));
+      });
+    </script>
+  </body>
+</html>

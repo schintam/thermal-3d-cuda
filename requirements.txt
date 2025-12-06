@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+numpy
+# For GPU acceleration on DGX or CUDA machines; pick the build matching your CUDA version.
+# Example: cupy-cuda12x
