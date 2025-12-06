@@ -48,6 +48,14 @@ class SimulationConfig:
             raise ValueError("Time-step and cell size must be positive")
         if self.diffusion <= 0:
             raise ValueError("Diffusion constant must be positive")
+        if self.hotspots:
+            for hs in self.hotspots:
+                if not (
+                    0 <= hs.x < self.nx
+                    and 0 <= hs.y < self.ny
+                    and 0 <= hs.z < self.nz
+                ):
+                    raise ValueError(f"Hotspot {hs} outside grid bounds")
 
 
 class ThermalSimulator:

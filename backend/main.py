@@ -7,7 +7,7 @@ from typing import List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, root_validator
 
 from .simulation import Hotspot, SimulationConfig, ThermalSimulator, example_configuration
 
@@ -42,15 +42,19 @@ class SimulationRequest(BaseModel):
     ambient: float = Field(300.0)
     hotspots: List[HotspotModel] = Field(default_factory=list)
 
-    @validator("hotspots")
-    def validate_hotspots(cls, hotspots, values):
-        nx = values.get("nx") or 0
-        ny = values.get("ny") or 0
-        nz = values.get("nz") or 0
+    @root_validator
+    def validate_hotspots(cls, values):
+        nx = values.get("nx") or cls.__fields__["nx"].default
+        ny = values.get("ny") or cls.__fields__["ny"].default
+        nz = values.get("nz") or cls.__fields__["nz"].default
+        hotspots = values.get("hotspots") or []
         for hs in hotspots:
             if not (0 <= hs.x < nx and 0 <= hs.y < ny and 0 <= hs.z < nz):
-                raise ValueError("Hotspot outside simulation bounds")
-        return hotspots
+                raise ValueError(
+                    f"Hotspot outside simulation bounds: ({hs.x}, {hs.y}, {hs.z}) not in [0,{nx})x[0,{ny})x[0,{nz})"
+                )
+        values["hotspots"] = hotspots
+        return values
 
 
 @app.get("/")
@@ -80,7 +84,10 @@ def simulate(body: SimulationRequest):
         hotspots=[Hotspot(**hs.dict()) for hs in body.hotspots],
     )
     simulator = ThermalSimulator()
-    result = simulator.run(cfg)
+    try:
+        result = simulator.run(cfg)
+    except ValueError as exc:  # surface validation errors cleanly
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     temperatures = result["temperature"].reshape(-1).tolist()
     return {
         "backend": result["backend"],
