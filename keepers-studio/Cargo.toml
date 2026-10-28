@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/keepers-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+[profile.dev]
+# Image decoding is unbearably slow unoptimised; keep debug info but optimise deps.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

@@ -1,0 +1,70 @@
+name: Keepers Studio
+
+on:
+  push:
+    paths:
+      - "keepers-studio/**"
+      - ".github/workflows/keepers-studio.yml"
+  pull_request:
+    paths:
+      - "keepers-studio/**"
+  workflow_dispatch:
+
+concurrency:
+  group: keepers-studio-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: keepers-studio
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            bundles: msi,nsis
+          - name: macOS Apple Silicon
+            os: macos-14
+            bundles: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: keepers-studio/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: keepers-studio
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Typecheck UI
+        run: npm run typecheck
+
+      - name: Engine tests
+        run: cargo test -p keepers-core --release
+
+      - name: Build app and installers
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: keepers-studio-${{ runner.os }}
+          path: |
+            keepers-studio/target/release/bundle/msi/*.msi
+            keepers-studio/target/release/bundle/nsis/*.exe
+            keepers-studio/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
