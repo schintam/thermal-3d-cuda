@@ -73,6 +73,8 @@ pub struct ViewOpts {
     pub zones: bool,
     /// Small, fast render for carousel cards.
     pub small: bool,
+    /// Quick lower-resolution render while a control is being adjusted.
+    pub draft: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +104,8 @@ pub struct Explore {
 
 /// Long edge of the source used for cards and analysis.
 const SMALL_EDGE: usize = 640;
+/// Long edge of the source for draft renders during adjustment.
+const DRAFT_EDGE: usize = 1024;
 
 pub struct RenderResult {
     pub jpeg: Vec<u8>,
@@ -122,7 +126,7 @@ pub struct Library {
     regroup: AtomicBool,
     codec_notice: AtomicBool,
     develop_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
-    small_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
+    small_cache: Mutex<Vec<((i64, usize), Arc<source::Linear>)>>,
     write_sidecars: AtomicBool,
 }
 
@@ -558,16 +562,21 @@ impl Library {
 
     /// A small copy of the develop source for carousel cards and analysis.
     fn small_source(&self, photo: &Photo) -> Result<Arc<source::Linear>> {
+        self.scaled_source(photo, SMALL_EDGE)
+    }
+
+    /// Downscaled copies of the develop source, cached per photo and size.
+    fn scaled_source(&self, photo: &Photo, edge: usize) -> Result<Arc<source::Linear>> {
         {
             let c = self.small_cache.lock();
-            if let Some((_, s)) = c.iter().find(|(id, _)| *id == photo.id) {
+            if let Some((_, s)) = c.iter().find(|((id, e), _)| *id == photo.id && *e == edge) {
                 return Ok(s.clone());
             }
         }
-        let small = Arc::new(self.develop_source(photo)?.downscale(SMALL_EDGE));
+        let small = Arc::new(self.develop_source(photo)?.downscale(edge));
         let mut c = self.small_cache.lock();
-        c.insert(0, (photo.id, small.clone()));
-        c.truncate(8);
+        c.insert(0, ((photo.id, edge), small.clone()));
+        c.truncate(12);
         Ok(small)
     }
 
@@ -579,10 +588,16 @@ impl Library {
     /// Render for display. `small` uses a ~600 px source (carousel cards).
     pub fn render(&self, id: i64, edits: &Edits, opts: &ViewOpts) -> Result<RenderResult> {
         let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
-        let src = if opts.small { self.small_source(&photo)? } else { self.develop_source(&photo)? };
+        let src = if opts.small {
+            self.small_source(&photo)?
+        } else if opts.draft {
+            self.scaled_source(&photo, DRAFT_EDGE)?
+        } else {
+            self.develop_source(&photo)?
+        };
         let ro = Self::render_opts(&photo, &src, opts.ignore_crop, opts.clip_warnings, opts.zones);
         let (img, histogram) = pipeline::render_image(&src, edits, &ro);
-        Ok(RenderResult { jpeg: preview::encode_jpeg(&img, if opts.small { 85 } else { 90 })?, width: img.width(), height: img.height(), histogram })
+        Ok(RenderResult { jpeg: preview::encode_jpeg(&img, if opts.small || opts.draft { 82 } else { 90 })?, width: img.width(), height: img.height(), histogram })
     }
 
     /// Everything the Explore view needs: looks rendered on this photo (as

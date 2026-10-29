@@ -35,6 +35,8 @@ export function Explore({ photo, keepers, onSaved, onError, onOpenDevelop, onNot
   const [lookEdits, setLookEdits] = useState<Edits | null>(null);
   const [cards, setCards] = useState<Record<string, string>>({});
   const [stage, setStage] = useState<Rendered | null>(null);
+  const stageRef = useRef<Rendered | null>(null);
+  stageRef.current = stage;
   const [busy, setBusy] = useState(false);
   const photoId = useRef(photo.id);
   photoId.current = photo.id;
@@ -129,16 +131,17 @@ export function Explore({ photo, keepers, onSaved, onError, onOpenDevelop, onNot
 
   // Main stage render: newest request wins.
   const inflight = useRef(false);
-  const pending = useRef<Edits | null>(null);
+  const pending = useRef<{ edits: Edits; draft: boolean } | null>(null);
+  const fullTimer = useRef<number | undefined>(undefined);
   const pump = useCallback(async () => {
     if (inflight.current || !pending.current) return;
-    const e = pending.current;
+    const { edits: e, draft } = pending.current;
     pending.current = null;
     inflight.current = true;
     setBusy(true);
     const id = photoId.current;
     try {
-      const r = await api.render(id, e);
+      const r = await api.render(id, e, { draft });
       if (id === photoId.current) {
         setStage((old) => {
           if (old) URL.revokeObjectURL(old.url);
@@ -155,9 +158,19 @@ export function Explore({ photo, keepers, onSaved, onError, onOpenDevelop, onNot
   }, [onError]);
   useEffect(() => {
     if (!combined) return;
-    pending.current = combined;
+    // Quick draft first, full quality once the controls settle.
+    const first = !stageRef.current;
+    pending.current = { edits: combined, draft: !first };
     pump();
+    window.clearTimeout(fullTimer.current);
+    if (!first) {
+      fullTimer.current = window.setTimeout(() => {
+        pending.current = { edits: combined, draft: false };
+        pump();
+      }, 350);
+    }
   }, [combined, pump]);
+  useEffect(() => () => window.clearTimeout(fullTimer.current), []);
   useEffect(
     () => () =>
       setStage((old) => {

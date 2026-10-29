@@ -51,6 +51,8 @@ export function Develop(props: Props) {
   const { photo, editsVersion, editsRef, onSaved, onError, cropMode, setCropMode, clip, setClip, before } = props;
   const [edits, setEditsState] = useState<Edits | null>(null);
   const [img, setImg] = useState<Rendered | null>(null);
+  const hasImage = useRef(false);
+  hasImage.current = img != null;
   const [beforeImg, setBeforeImg] = useState<Rendered | null>(null);
   const [busy, setBusy] = useState(false);
   const [presets, setPresets] = useState<Preset[]>([]);
@@ -93,7 +95,9 @@ export function Develop(props: Props) {
 
   // ---- render loop: at most one request in flight; newest settings win
   const inflight = useRef(false);
-  const pending = useRef<{ id: number; edits: Edits; ignoreCrop: boolean; clip: boolean; zones: boolean } | null>(null);
+  const pending = useRef<{ id: number; edits: Edits; ignoreCrop: boolean; clip: boolean; zones: boolean; draft: boolean } | null>(null);
+  const fullTimer = useRef<number | undefined>(undefined);
+  const [isDraft, setIsDraft] = useState(false);
   const pump = useCallback(async () => {
     if (inflight.current || !pending.current) return;
     const req = pending.current;
@@ -101,7 +105,8 @@ export function Develop(props: Props) {
     inflight.current = true;
     setBusy(true);
     try {
-      const r = await api.render(req.id, req.edits, { ignoreCrop: req.ignoreCrop, clipWarnings: req.clip, zones: req.zones });
+      const r = await api.render(req.id, req.edits, { ignoreCrop: req.ignoreCrop, clipWarnings: req.clip, zones: req.zones, draft: req.draft });
+      setIsDraft(req.draft);
       if (req.id === photoId.current) {
         setImg((prev) => {
           if (prev) URL.revokeObjectURL(prev.url);
@@ -119,9 +124,21 @@ export function Develop(props: Props) {
 
   useEffect(() => {
     if (!edits) return;
-    pending.current = { id: photo.id, edits, ignoreCrop: cropMode, clip, zones: zoneMap };
+    // Instant low-resolution draft while adjusting, then full quality once
+    // the controls have been still for a moment.
+    const req = { id: photo.id, edits, ignoreCrop: cropMode, clip, zones: zoneMap };
+    const first = !hasImage.current;
+    pending.current = { ...req, draft: !first };
     pump();
+    window.clearTimeout(fullTimer.current);
+    if (!first) {
+      fullTimer.current = window.setTimeout(() => {
+        pending.current = { ...req, draft: false };
+        pump();
+      }, 350);
+    }
   }, [edits, cropMode, clip, zoneMap, photo.id, pump]);
+  useEffect(() => () => window.clearTimeout(fullTimer.current), []);
 
   // Clear stale images when switching photos.
   useEffect(() => {
@@ -258,6 +275,7 @@ export function Develop(props: Props) {
         guide={guide}
         spiralFlip={spiralFlip}
         zones={zoneMap}
+        refining={isDraft}
         onPick={
           placing
             ? (x, y) => {
@@ -346,6 +364,14 @@ export function Develop(props: Props) {
         )}
 
         <Section title="Basic" open>
+          <div className="segmented treatment">
+            <button className={!edits.mono.enabled ? "on" : ""} onClick={() => setMono({ enabled: false })}>
+              Colour
+            </button>
+            <button className={edits.mono.enabled ? "on" : ""} onClick={() => setMono({ enabled: true })}>
+              Black &amp; White
+            </button>
+          </div>
           <Slider label="Temp" min={-100} max={100} value={edits.temp} onChange={(v) => set("temp", v)} className="temp" />
           <Slider label="Tint" min={-100} max={100} value={edits.tint} onChange={(v) => set("tint", v)} className="tint" />
           <Slider label="Exposure" min={-5} max={5} step={0.01} value={edits.exposure} onChange={(v) => set("exposure", v)} format={(v) => (v > 0 ? "+" : "") + v.toFixed(2)} />
@@ -354,8 +380,8 @@ export function Develop(props: Props) {
           <Slider label="Shadows" min={-100} max={100} value={edits.shadows} onChange={(v) => set("shadows", v)} />
           <Slider label="Whites" min={-100} max={100} value={edits.whites} onChange={(v) => set("whites", v)} />
           <Slider label="Blacks" min={-100} max={100} value={edits.blacks} onChange={(v) => set("blacks", v)} />
-          <Slider label="Vibrance" min={-100} max={100} value={edits.vibrance} onChange={(v) => set("vibrance", v)} />
-          <Slider label="Saturation" min={-100} max={100} value={edits.saturation} onChange={(v) => set("saturation", v)} />
+          <Slider label="Vibrance" min={-100} max={100} value={edits.vibrance} onChange={(v) => set("vibrance", v)} disabled={edits.mono.enabled} />
+          <Slider label="Saturation" min={-100} max={100} value={edits.saturation} onChange={(v) => set("saturation", v)} disabled={edits.mono.enabled} />
         </Section>
 
         <Section title="Tone Curve">
@@ -373,28 +399,35 @@ export function Develop(props: Props) {
           </button>
         </Section>
 
-        <Section title="HSL / Color">
-          <div className="tabs">
-            {(["hue", "sat", "lum"] as const).map((t) => (
-              <button key={t} className={hslTab === t ? "on" : ""} onClick={() => setHslTab(t)}>
-                {t === "hue" ? "Hue" : t === "sat" ? "Saturation" : "Luminance"}
-              </button>
-            ))}
-          </div>
-          {HSL_NAMES.map((n, i) => (
-            <Slider
-              key={n}
-              label={n}
-              min={-100}
-              max={100}
-              value={edits.hsl[i][hslTab]}
-              accent={HSL_COLORS[i]}
-              onChange={(v) => {
-                const hsl = edits.hsl.map((b, j) => (j === i ? { ...b, [hslTab]: v } : b));
-                set("hsl", hsl);
-              }}
-            />
-          ))}
+        <Section title={edits.mono.enabled ? "B&W Mix" : "HSL / Color"} open={edits.mono.enabled}>
+          {edits.mono.enabled ? (
+            <p className="hint">Lighten or darken the grey each colour becomes — like shooting through a coloured filter, one colour at a time.</p>
+          ) : (
+            <div className="tabs">
+              {(["hue", "sat", "lum"] as const).map((t) => (
+                <button key={t} className={hslTab === t ? "on" : ""} onClick={() => setHslTab(t)}>
+                  {t === "hue" ? "Hue" : t === "sat" ? "Saturation" : "Luminance"}
+                </button>
+              ))}
+            </div>
+          )}
+          {HSL_NAMES.map((n, i) => {
+            const tab = edits.mono.enabled ? "lum" : hslTab;
+            return (
+              <Slider
+                key={n}
+                label={n}
+                min={-100}
+                max={100}
+                value={edits.hsl[i][tab]}
+                accent={HSL_COLORS[i]}
+                onChange={(v) => {
+                  const hsl = edits.hsl.map((b, j) => (j === i ? { ...b, [tab]: v } : b));
+                  set("hsl", hsl);
+                }}
+              />
+            );
+          })}
         </Section>
 
         <Section title="Detail">
@@ -594,11 +627,16 @@ interface SliderProps {
   format?: (v: number) => string;
   accent?: string;
   className?: string;
+  disabled?: boolean;
 }
 
-function Slider({ label, min, max, step = 1, value, def = 0, onChange, format, accent, className }: SliderProps) {
+function Slider({ label, min, max, step = 1, value, def = 0, onChange, format, accent, className, disabled }: SliderProps) {
   return (
-    <label className={"slider " + (className ?? "")} onDoubleClick={() => onChange(def)} title="Double-click to reset">
+    <label
+      className={"slider " + (className ?? "") + (disabled ? " colour-only" : "")}
+      onDoubleClick={() => !disabled && onChange(def)}
+      title={disabled ? "Colour only — in black and white, use B&W Mix" : "Double-click to reset"}
+    >
       <span className="sl-label">{label}</span>
       <input
         type="range"
@@ -606,6 +644,7 @@ function Slider({ label, min, max, step = 1, value, def = 0, onChange, format, a
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         style={accent ? ({ accentColor: accent } as React.CSSProperties) : undefined}
         onChange={(e) => onChange(Number(e.target.value))}
       />
@@ -625,12 +664,14 @@ interface CanvasProps {
   guide: OverlayKind;
   spiralFlip: number;
   zones: boolean;
+  /** Showing a quick draft; full quality is on its way. */
+  refining: boolean;
   /** When set, a click on the image reports its normalised position. */
   onPick: ((x: number, y: number) => void) | null;
 }
 
 /** The developed image, fitted, with the crop overlay when cropping. */
-function Canvas({ img, busy, cropMode, cropRect, setCropRect, aspect, label, guide, spiralFlip, zones, onPick }: CanvasProps) {
+function Canvas({ img, busy, cropMode, cropRect, setCropRect, aspect, label, guide, spiralFlip, zones, refining, onPick }: CanvasProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 1, h: 1 });
   useLayoutEffect(() => {
@@ -727,7 +768,11 @@ function Canvas({ img, busy, cropMode, cropRect, setCropRect, aspect, label, gui
         </div>
       )}
       {!img && <div className="empty">Developing…</div>}
-      {busy && <div className="spinner" />}
+      {(busy || refining) && (
+        <div className="rendering">
+          <span className="spinner-inline" /> {refining && !busy ? "Refining…" : "Rendering…"}
+        </div>
+      )}
       {label && <div className="beforelabel">{label}</div>}
       {cropMode && img && (
         <div className="crop-layer" style={{ left, top, width: dw, height: dh }}>

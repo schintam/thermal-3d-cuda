@@ -82,6 +82,7 @@ cargo run -p keepers-core --release --example make_shoot -- C:\temp\shoot
 
    Pick one of each, adjust Strength, Grain, Glow and Print edges, then press Enter to apply. `[` / `]` step through the looks. "Apply look to all picks" does a whole shoot.
 4. **Develop** (`D`). The filmstrip shows only your picks. Available tools: white balance, exposure, contrast, highlights/shadows/whites/blacks, vibrance/saturation, tone curve, HSL, crop/straighten/rotate (`R`), sharpening, noise reduction, and presets. Copy and paste settings with Ctrl+Shift+C / V. Hold `\` for before/after, and press `J` for clipping warnings.
+   A **Colour / Black & White** switch sits at the top of Basic. In black and white, the HSL panel becomes a **B&W Mix**: each colour's slider makes that colour lighter or darker in grey. Vibrance and Saturation are greyed out there. While you drag, a quick draft preview appears at once and is refined to full quality a moment after you stop.
    The photographic craft behind the looks is also available directly, for those who want it:
    - *Black & White*: film character (neutral, classic 400, fine grain, orthochromatic, infrared), coloured lens filters, paper grade 0–5 with **split-grade printing** (soft and hard exposures), and **toners** (selenium, sepia, gold, platinum, cyanotype).
    - *Film & Character*: colour film renditions, grain scaled to film format (35mm / 120 / 4×5), glow (bloom in B&W, halation in colour), and darkroom **edge burning**.

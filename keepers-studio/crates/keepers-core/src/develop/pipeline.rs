@@ -24,10 +24,12 @@ pub fn render(src: &Linear, e: &Edits, o: &RenderOpts) -> Rendered {
     let mut px: Vec<[f32; 3]> = geo.px.par_iter().map(|p| pipe.apply(*p)).collect();
     let scale = if o.scale > 0.0 { o.scale } else { 1.0 };
     let (w, h) = (geo.w, geo.h);
-    let glow = e.glow / 100.0 + pipe.halation();
-    if glow > 0.0 {
-        let mono = e.mono.enabled && e.mono.amount >= 50.0;
-        style_glow(&mut px, w, h, glow, mono);
+    if e.glow > 0.0 {
+        style_glow(&mut px, w, h, e.glow / 100.0, Glow::Bloom);
+    }
+    let halation = pipe.halation();
+    if halation > 0.0 {
+        style_glow(&mut px, w, h, halation, Glow::Halation);
     }
     if e.nr_color > 0.0 || e.nr_luma > 0.0 {
         noise_reduction(&mut px, w, h, e.nr_luma / 100.0, e.nr_color / 100.0, scale);
@@ -238,6 +240,8 @@ struct MonoPipe {
     toner: style::Toner,
     toner_amount: f32,
     amount: f32,
+    /// B&W colour mixer: the HSL luminance sliders, -1..1 per band, in stops.
+    mix: Option<[f32; 8]>,
 }
 
 const PRINT_N: usize = 1024;
@@ -255,6 +259,7 @@ impl PixelPipe {
                 toner: e.mono.toner,
                 toner_amount: e.mono.toner_amount,
                 amount: (e.mono.amount / 100.0).clamp(0.0, 1.0),
+                mix: e.hsl.iter().any(|b| b.lum != 0.0).then(|| e.hsl.map(|b| b.lum / 100.0)),
             }
         });
         PixelPipe {
@@ -284,7 +289,17 @@ impl PixelPipe {
             rgb
         };
         let Some(m) = &self.mono else { return colour(p) };
-        let v = (m.w[0] * p[0] + m.w[1] * p[1] + m.w[2] * p[2]).max(0.0);
+        let mut v = (m.w[0] * p[0] + m.w[1] * p[1] + m.w[2] * p[2]).max(0.0);
+        if let Some(mix) = &m.mix {
+            // Like a coloured filter per hue band: lighten or darken each
+            // colour's grey (up to one stop), in proportion to its saturation.
+            let rgb = [self.lut.apply(0, p[0]), self.lut.apply(1, p[1]), self.lut.apply(2, p[2])];
+            let (h, s, _) = rgb_to_hsv(rgb);
+            if s > 0.02 {
+                let stops: f32 = BANDS.iter().enumerate().map(|(i, &c)| band_weight(h, i, c) * mix[i]).sum();
+                v *= 2f32.powf(stops * s.min(1.0).sqrt() * 1.2);
+            }
+        }
         let x = m.lut.apply(0, v);
         let f = x.clamp(0.0, 1.0) * (PRINT_N - 1) as f32;
         let i = (f as usize).min(PRINT_N - 2);
@@ -645,17 +660,35 @@ fn noise_reduction(px: &mut [[f32; 3]], w: usize, h: usize, luma_amt: f32, color
     }
 }
 
-/// Halation (colour: red-orange glow scattering around highlights) or bloom
-/// (black and white: a soft, luminous diffusion like a printing diffuser).
+#[derive(Clone, Copy, PartialEq)]
+enum Glow {
+    /// Soft, luminous diffusion of the light tones (a printing diffuser or
+    /// soft filter); works on any photo by keying off its own brightest tones.
+    Bloom,
+    /// Red-orange scatter around strong highlights, from light bouncing off
+    /// the film base (motion-picture stocks).
+    Halation,
+}
+
 /// Radii are proportional to the image, so preview and export match.
-fn style_glow(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, mono: bool) {
+fn style_glow(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, kind: Glow) {
     let long = w.max(h) as f32;
-    let threshold = if mono { 0.45 } else { 0.7 };
+    let threshold = match kind {
+        Glow::Halation => 0.72,
+        Glow::Bloom => {
+            // The photo's own light tones: around its 85th percentile.
+            let step = (px.len() / 20000).max(1);
+            let mut l: Vec<f32> = px.iter().step_by(step).map(|p| style::luma(*p)).collect();
+            l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p85 = l.get(l.len() * 85 / 100).copied().unwrap_or(0.7);
+            (p85 - 0.22).clamp(0.2, 0.75)
+        }
+    };
     let mask: Vec<f32> = px.par_iter().map(|p| style::smoothstep(threshold, 1.0, style::luma(*p))).collect();
-    let sigma = long * if mono { 0.012 } else { 0.006 };
+    let sigma = long * if kind == Glow::Bloom { 0.012 } else { 0.006 };
     let b = blur(&mask, w, h, sigma.max(0.5));
-    let tint = if mono { [1.0, 1.0, 1.0] } else { [1.0, 0.32, 0.12] };
-    let k = amount.clamp(0.0, 1.5) * if mono { 0.5 } else { 0.8 };
+    let tint = if kind == Glow::Bloom { [1.0, 0.98, 0.94] } else { [1.0, 0.32, 0.12] };
+    let k = amount.clamp(0.0, 1.5) * if kind == Glow::Bloom { 1.1 } else { 0.8 };
     px.par_iter_mut().zip(b.par_iter()).for_each(|(p, &g)| {
         for c in 0..3 {
             let a = (g * tint[c] * k).min(1.0);
@@ -718,13 +751,32 @@ fn edge_burn(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32) {
             let nx = (x as f32 + 0.5) / w as f32;
             let bx = 1.0 - style::smoothstep(0.0, band * h as f32 / w as f32 * 1.2, nx.min(1.0 - nx));
             let burn = 1.0 - (1.0 - bx.powf(1.5)) * (1.0 - by.powf(1.5));
+            if burn < 1e-4 {
+                continue;
+            }
             // One stop at full strength, applied in linear light like real exposure.
             let gain = 2f32.powf(-amount.clamp(0.0, 1.0) * burn);
             for v in p.iter_mut() {
-                *v = linear_to_srgb(srgb_to_linear(v.clamp(0.0, 1.0)) * gain);
+                *v = lut_lin_to_srgb(lut_srgb_to_lin(*v) * gain);
             }
         }
     });
+}
+
+static SRGB_TO_LIN: std::sync::LazyLock<Vec<f32>> =
+    std::sync::LazyLock::new(|| (0..4096).map(|i| srgb_to_linear(i as f32 / 4095.0)).collect());
+static LIN_TO_SRGB: std::sync::LazyLock<Vec<f32>> =
+    std::sync::LazyLock::new(|| (0..4096).map(|i| linear_to_srgb((i as f32 / 4095.0).powi(2))).collect());
+
+#[inline]
+fn lut_srgb_to_lin(v: f32) -> f32 {
+    SRGB_TO_LIN[(v.clamp(0.0, 1.0) * 4095.0) as usize]
+}
+
+/// Indexed in sqrt space for shadow precision.
+#[inline]
+fn lut_lin_to_srgb(v: f32) -> f32 {
+    LIN_TO_SRGB[(v.clamp(0.0, 1.0).sqrt() * 4095.0) as usize]
 }
 
 fn sharpen(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, radius: f32) {

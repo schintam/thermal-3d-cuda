@@ -165,6 +165,7 @@ export interface ViewOpts {
   clipWarnings?: boolean;
   zones?: boolean;
   small?: boolean;
+  draft?: boolean;
 }
 
 export const defaultEdits = (): Edits => ({
