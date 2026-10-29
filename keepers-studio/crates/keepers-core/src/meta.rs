@@ -42,12 +42,12 @@ pub fn read(path: &Path, kind: Kind, buf: &[u8]) -> Meta {
                 false
             }
         }
-        Kind::Png | Kind::Heic => false,
+        Kind::Png | Kind::Heic | Kind::Webp | Kind::Gif => false,
     };
     if !parsed || m.capture_time.is_none() {
         match kind {
             Kind::Raw => rawler_meta(path, &mut m),
-            Kind::Png | Kind::Heic => kamadak_meta(path, &mut m),
+            Kind::Png | Kind::Heic | Kind::Webp => kamadak_meta(path, &mut m),
             _ => {}
         }
     }

@@ -122,7 +122,7 @@ const Cell = memo(function Cell({ photo: p, x, y, size, focused, selected, stack
         {failed || p.error ? (
           <div className="placeholder">
             <span>{p.kind.toUpperCase()}</span>
-            {p.error && <small title={p.error}>⚠ unreadable</small>}
+            {p.error && <small title={p.error}>{p.error.includes("Microsoft Store") ? "⚠ needs free Windows codec" : "⚠ unreadable"}</small>}
             {!p.error && p.kind === "heic" && <small>preview unavailable</small>}
           </div>
         ) : (

@@ -284,6 +284,14 @@ impl Catalog {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Mark a folder's unreadable photos for another attempt; returns their ids.
+    pub fn reset_errors(&self, folder_id: i64) -> Result<Vec<i64>> {
+        let c = self.conn.lock();
+        let mut st = c.prepare("UPDATE photos SET processed = 0, error = NULL WHERE folder_id = ?1 AND error IS NOT NULL RETURNING id")?;
+        let rows = st.query_map([folder_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn unprocessed(&self) -> Result<Vec<i64>> {
         let c = self.conn.lock();
         let mut st = c.prepare("SELECT id FROM photos WHERE processed = 0 ORDER BY folder_id, capture_time, file_name")?;

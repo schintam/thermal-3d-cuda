@@ -120,6 +120,7 @@ pub struct Library {
     done: AtomicUsize,
     updated: Mutex<Vec<i64>>,
     regroup: AtomicBool,
+    codec_notice: AtomicBool,
     develop_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
     small_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
     write_sidecars: AtomicBool,
@@ -142,6 +143,7 @@ impl Library {
             done: AtomicUsize::new(0),
             updated: Mutex::new(Vec::new()),
             regroup: AtomicBool::new(false),
+            codec_notice: AtomicBool::new(false),
             develop_cache: Mutex::new(Vec::new()),
             small_cache: Mutex::new(Vec::new()),
             write_sidecars: AtomicBool::new(write_sidecars),
@@ -192,6 +194,10 @@ impl Library {
         let folder_id = self.catalog.add_folder(folder)?;
         self.status(format!("Scanning {}", folder.display()), 0, 0, false);
         let added = self.insert_new(folder_id, scan(folder))?;
+        // Retry files that failed before (e.g. a codec has since been installed).
+        for id in self.catalog.reset_errors(folder_id)? {
+            self.enqueue(id);
+        }
         self.regroup.store(true, Ordering::SeqCst);
         (self.emit)(Event::CatalogChanged);
         self.status(format!("Imported {added} new photos from {}", folder.display()), added, added, true);
@@ -398,7 +404,12 @@ impl Library {
             }
             Err(e) => {
                 log::warn!("preview failed for {}: {e:#}", p.path);
-                self.catalog.set_processed(id, &m, None, None, Some(&format!("{e:#}")))?;
+                let msg = format!("{e:#}");
+                // Missing OS codec (HEIC/AVIF on Windows): say how to fix it, once.
+                if msg.contains("Microsoft Store") && !self.codec_notice.swap(true, Ordering::SeqCst) {
+                    (self.emit)(Event::Error { message: format!("{}. After installing, use \"Rescan folder\".", msg.rsplit(": ").next().unwrap_or(&msg)) });
+                }
+                self.catalog.set_processed(id, &m, None, None, Some(&msg))?;
             }
         }
         Ok(())

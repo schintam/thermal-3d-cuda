@@ -109,7 +109,7 @@ pub fn linear_to_srgb(v: f32) -> f32 {
 pub fn load(path: &Path, kind: Kind, orientation: u16, max_edge: Option<usize>) -> Result<Linear> {
     guard(|| match kind {
         Kind::Raw => load_raw(path, max_edge),
-        Kind::Jpeg | Kind::Tiff | Kind::Png => {
+        Kind::Jpeg | Kind::Tiff | Kind::Png | Kind::Webp | Kind::Gif => {
             let img = image::ImageReader::open(path)?.with_guessed_format()?.decode()?;
             let img = match max_edge {
                 Some(m) if img.width().max(img.height()) as usize > m * 2 => img.thumbnail(m as u32 * 2, m as u32 * 2),
@@ -123,7 +123,8 @@ pub fn load(path: &Path, kind: Kind, orientation: u16, max_edge: Option<usize>) 
             })
         }
         Kind::Heic => {
-            let lin = from_rendered(&crate::heic::decode(path, 0)?).orient(orientation);
+            // Upright already: HEIF carries its own rotation.
+            let lin = from_rendered(&crate::heic::decode(path, 0)?);
             Ok(match max_edge {
                 Some(m) => lin.downscale(m),
                 None => lin,

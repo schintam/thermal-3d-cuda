@@ -104,7 +104,7 @@ These were picked so the build could go ahead. All of them are easy to change.
 | RAW core | [`rawler`](https://github.com/dnglab/dnglab) (pure Rust, from dnglab) | No C toolchain pain on Windows; supports DNG/CR3/NEF/ARW/RAF. **Licence is LGPL-2.1, see below** |
 | Sidecars | JSON: `<file>.keepers.json` next to each photo (can be switched off in the sidebar) | Simple and lossless for the edit stack. XMP export can come later for Lightroom interop |
 | RAW+JPEG | One stacked item, RAW is primary, JPEG is the preview fallback | Spec's suggested default |
-| HEIC | Imported with metadata. Preview shown on macOS only (WebKit decodes it); Windows shows a placeholder. Not developable | Avoids shipping a HEVC decoder in v1 |
+| HEIC / AVIF | Decoded by the OS: ImageIO on macOS, Windows Imaging Component on Windows (needs Microsoft's free "HEIF Image Extensions" + "HEVC Video Extensions"; AVIF needs "AV1 Video Extension"). Full previews, scores, develop and export | No patent-encumbered decoder bundled |
 | Key map | Lightroom / Photo Mechanic style, as in §5 | |
 | Import template | `{date} {name}` → `2026-10-28 Wedding` | |
 | Export naming | `{name}` (original file name) | |
@@ -128,7 +128,7 @@ These were picked so the build could go ahead. All of them are easy to change.
 - **Export doesn't copy EXIF** (capture date, camera) into the output files yet.
 - **ICC / Display P3:** output is sRGB and the UI renders in the webview's sRGB.
 - **Watermarks** on export.
-- **HEIC on Windows**: still a placeholder. macOS decodes HEIC through the OS; Windows would need a bundled HEVC decoder, which raises patent-licensing questions.
+- **HEIC on Windows** relies on Microsoft's codec extensions; without them HEIC files show "needs free Windows codec" and the app explains what to install. Linux has no HEIC support yet.
 - **Lightroom develop settings** are not translated on import. Picks, rejects and stars are.
 - **Not yet validated on real camera files.** The RAW path is tested end to end on *synthetic* DNGs (real Bayer data, white balance, colour matrix, orientation, embedded previews, lens opcodes, corrupt files). This environment couldn't download real samples from any camera. Running `inspect` on your Q2 folder is the next step (§8).
 

@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type Kind = "raw" | "jpeg" | "tiff" | "png" | "heic";
+export type Kind = "raw" | "jpeg" | "tiff" | "png" | "heic" | "webp" | "gif";
 
 export interface Photo {
   id: number;

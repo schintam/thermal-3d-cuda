@@ -11,6 +11,8 @@ pub enum Kind {
     Tiff,
     Png,
     Heic,
+    Webp,
+    Gif,
 }
 
 impl Kind {
@@ -21,6 +23,8 @@ impl Kind {
             Kind::Tiff => "tiff",
             Kind::Png => "png",
             Kind::Heic => "heic",
+            Kind::Webp => "webp",
+            Kind::Gif => "gif",
         }
     }
 
@@ -31,6 +35,8 @@ impl Kind {
             "tiff" => Kind::Tiff,
             "png" => Kind::Png,
             "heic" => Kind::Heic,
+            "webp" => Kind::Webp,
+            "gif" => Kind::Gif,
             _ => return None,
         })
     }
@@ -49,7 +55,10 @@ pub fn classify(path: &Path) -> Option<Kind> {
         "jpg" | "jpeg" | "jpe" => Some(Kind::Jpeg),
         "tif" | "tiff" => Some(Kind::Tiff),
         "png" => Some(Kind::Png),
-        "heic" | "heif" | "hif" => Some(Kind::Heic),
+        // AVIF shares HEIF's container and goes through the same OS decoders.
+        "heic" | "heif" | "hif" | "avif" => Some(Kind::Heic),
+        "webp" => Some(Kind::Webp),
+        "gif" => Some(Kind::Gif),
         e if RAW_EXTS.contains(&e) => Some(Kind::Raw),
         _ => None,
     }
@@ -65,6 +74,8 @@ mod tests {
         assert_eq!(classify(Path::new("a.Cr3")), Some(Kind::Raw));
         assert_eq!(classify(Path::new("a.JPG")), Some(Kind::Jpeg));
         assert_eq!(classify(Path::new("a.heic")), Some(Kind::Heic));
+        assert_eq!(classify(Path::new("PXL_1.AVIF")), Some(Kind::Heic));
+        assert_eq!(classify(Path::new("a.webp")), Some(Kind::Webp));
         assert_eq!(classify(Path::new("a.xmp")), None);
         assert_eq!(classify(Path::new("noext")), None);
     }

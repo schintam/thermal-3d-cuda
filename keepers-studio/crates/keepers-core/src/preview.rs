@@ -40,16 +40,17 @@ fn load_inner(src: &Source, want: u32) -> Result<Loaded> {
             let (img, w, h) = decode_jpeg(&buf, want)?;
             Ok(oriented(img, w, h, src.orientation))
         }
-        Kind::Tiff | Kind::Png => {
+        Kind::Tiff | Kind::Png | Kind::Webp | Kind::Gif => {
             let img = image::ImageReader::open(src.path)?.with_guessed_format()?.decode()?;
             let (w, h) = (img.width(), img.height());
             let img = if want > 0 && img.width().max(img.height()) > want { img.thumbnail(want, want) } else { img };
             Ok(oriented(img, w, h, src.orientation))
         }
         Kind::Heic => {
+            // Comes back upright: HEIF carries its own rotation.
             let img = crate::heic::decode(src.path, want)?;
             let (w, h) = (img.width(), img.height());
-            Ok(oriented(img, w, h, src.orientation))
+            Ok(oriented(img, w, h, 1))
         }
         Kind::Raw => load_raw(src, want),
     }
@@ -177,6 +178,20 @@ mod tests {
         assert_eq!(small.width(), 300);
         let (full, _, _) = decode_jpeg(&bytes, 0).unwrap();
         assert_eq!((full.width(), full.height()), (1600, 1000));
+    }
+
+    #[test]
+    fn webp_and_gif_preview() {
+        let d = tempfile::tempdir().unwrap();
+        let img = image::RgbaImage::from_fn(300, 200, |x, y| image::Rgba([x as u8, y as u8, 80, 255]));
+        for (name, kind) in [("a.webp", Kind::Webp), ("a.gif", Kind::Gif)] {
+            let p = d.path().join(name);
+            img.save(&p).unwrap();
+            assert_eq!(crate::formats::classify(&p), Some(kind));
+            let l = load(&Source { path: &p, kind, orientation: 1, pair: None }, 100).unwrap();
+            assert_eq!((l.full_w, l.full_h), (300, 200));
+            assert_eq!(l.image.width(), 100);
+        }
     }
 
     #[test]
