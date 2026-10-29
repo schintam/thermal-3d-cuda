@@ -1,8 +1,13 @@
 //! Non-destructive develop: an edit stack applied to a linear-light source.
 
+pub mod composition;
+pub mod looks;
 pub mod opcodes;
 pub mod pipeline;
 pub mod source;
+pub mod style;
+
+pub use style::{ColorStock, FilmLook, Harmony, HarmonyTemplate, LensFilter, Mono, MonoFilm, Toner};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +63,25 @@ pub struct Edits {
     /// 0..100.
     pub nr_luma: f32,
     pub nr_color: f32,
+
+    // ---- photographic style ----
+    /// Black-and-white conversion: film, lens filter, paper grade, toner.
+    pub mono: Mono,
+    /// Colour film rendition.
+    pub film: FilmLook,
+    /// Film grain, 0..100, and its size (1 = 35 mm 400-speed; smaller for
+    /// medium/large format).
+    pub grain: f32,
+    pub grain_size: f32,
+    /// Glow, 0..100: soft bloom in black and white, halation in colour.
+    pub glow: f32,
+    /// Darkroom edge burning, 0..100.
+    pub edge_burn: f32,
+    pub harmony: Option<Harmony>,
+    /// Zone System: the zone a tone was placed in, and N+/N- development
+    /// (-2..2) expanding or contracting tones around it.
+    pub zone_anchor: Option<u8>,
+    pub zone_n: f32,
 }
 
 impl Default for Edits {
@@ -83,6 +107,15 @@ impl Default for Edits {
             sharpen_radius: 1.0,
             nr_luma: 0.0,
             nr_color: 0.0,
+            mono: Mono::default(),
+            film: FilmLook::default(),
+            grain: 0.0,
+            grain_size: 1.0,
+            glow: 0.0,
+            edge_burn: 0.0,
+            harmony: None,
+            zone_anchor: None,
+            zone_n: 0.0,
         }
     }
 }
@@ -106,4 +139,6 @@ pub struct RenderOpts {
     /// Ratio of this render's resolution to the full image, for scaling
     /// spatial filters (sharpening/NR radius).
     pub scale: f32,
+    /// Show the Zone System map: each tone posterised to its zone (0..X).
+    pub zones: bool,
 }

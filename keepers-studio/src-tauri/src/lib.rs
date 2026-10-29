@@ -2,9 +2,9 @@
 //! custom URI schemes, and forwards engine events.
 
 use keepers_core::catalog::{Folder, Photo};
-use keepers_core::develop::Edits;
+use keepers_core::develop::{Edits, HarmonyTemplate};
 use keepers_core::export::{self, ExportSettings};
-use keepers_core::library::{CopyOptions, Preset};
+use keepers_core::library::{CopyOptions, Explore, Preset, ViewOpts};
 use keepers_core::sources::ExternalSource;
 use keepers_core::{Event, Library};
 use serde::Serialize;
@@ -152,9 +152,9 @@ async fn save_edits(app: State<'_, App>, ids: Vec<i64>, edits: Edits) -> Res<Vec
 /// Binary response: u32 width, u32 height, 3x256 u32 histogram (all
 /// little-endian), then the JPEG.
 #[tauri::command]
-async fn render(app: State<'_, App>, id: i64, edits: Edits, ignore_crop: bool, clip_warnings: bool) -> Result<Response, String> {
+async fn render(app: State<'_, App>, id: i64, edits: Edits, opts: ViewOpts) -> Result<Response, String> {
     let lib = app.lib.clone();
-    let r = blocking(move || lib.render(id, &edits, ignore_crop, clip_warnings)).await?;
+    let r = blocking(move || lib.render(id, &edits, &opts)).await?;
     let mut out = Vec::with_capacity(8 + 3 * 256 * 4 + r.jpeg.len());
     out.extend_from_slice(&r.width.to_le_bytes());
     out.extend_from_slice(&r.height.to_le_bytes());
@@ -165,6 +165,29 @@ async fn render(app: State<'_, App>, id: i64, edits: Edits, ignore_crop: bool, c
     }
     out.extend_from_slice(&r.jpeg);
     Ok(Response::new(out))
+}
+
+#[tauri::command]
+async fn explore(app: State<'_, App>, id: i64, edits: Edits) -> Res<Explore> {
+    let lib = app.lib.clone();
+    blocking(move || lib.explore(id, &edits)).await
+}
+
+#[tauri::command]
+fn look_edits(app: State<'_, App>, look: String, base: Edits, strength: f32, harmony: Option<(HarmonyTemplate, f32)>) -> Edits {
+    app.lib.look_edits(&look, &base, strength, harmony)
+}
+
+#[tauri::command]
+async fn place_zone(app: State<'_, App>, id: i64, edits: Edits, x: f32, y: f32, zone: u8) -> Res<Edits> {
+    let lib = app.lib.clone();
+    blocking(move || lib.place_zone(id, &edits, x, y, zone)).await
+}
+
+#[tauri::command]
+async fn analyze_colour(app: State<'_, App>, id: i64, edits: Edits) -> Res<keepers_core::develop::looks::ColourAnalysis> {
+    let lib = app.lib.clone();
+    blocking(move || lib.analyze_colour(id, &edits)).await
 }
 
 #[tauri::command]
@@ -331,6 +354,10 @@ pub fn run() {
             get_edits,
             save_edits,
             render,
+            explore,
+            look_edits,
+            place_zone,
+            analyze_colour,
             warm,
             presets,
             save_preset,

@@ -3,7 +3,8 @@
 //! renders in a few milliseconds per core.
 
 use super::opcodes::sample;
-use super::source::{linear_to_srgb, Linear};
+use super::source::{linear_to_srgb, srgb_to_linear, Linear};
+use super::style::{self, HarmonyOp, StockOp};
 use super::{Edits, RenderOpts};
 use image::{DynamicImage, ImageBuffer};
 use rayon::prelude::*;
@@ -19,22 +20,34 @@ pub type Histogram = [[u32; 256]; 3];
 
 pub fn render(src: &Linear, e: &Edits, o: &RenderOpts) -> Rendered {
     let geo = geometry(src, e, o.ignore_crop);
-    let lut = ToneLut::new(e, src.is_raw);
-    let color = ColorOps::new(e);
-    let mut px: Vec<[f32; 3]> = geo
-        .px
-        .par_iter()
-        .map(|p| {
-            let rgb = [lut.apply(0, p[0]), lut.apply(1, p[1]), lut.apply(2, p[2])];
-            color.apply(rgb)
-        })
-        .collect();
+    let pipe = PixelPipe::new(e, src.is_raw);
+    let mut px: Vec<[f32; 3]> = geo.px.par_iter().map(|p| pipe.apply(*p)).collect();
     let scale = if o.scale > 0.0 { o.scale } else { 1.0 };
+    let (w, h) = (geo.w, geo.h);
+    let glow = e.glow / 100.0 + pipe.halation();
+    if glow > 0.0 {
+        let mono = e.mono.enabled && e.mono.amount >= 50.0;
+        style_glow(&mut px, w, h, glow, mono);
+    }
     if e.nr_color > 0.0 || e.nr_luma > 0.0 {
-        noise_reduction(&mut px, geo.w, geo.h, e.nr_luma / 100.0, e.nr_color / 100.0, scale);
+        noise_reduction(&mut px, w, h, e.nr_luma / 100.0, e.nr_color / 100.0, scale);
     }
     if e.sharpen > 0.0 {
-        sharpen(&mut px, geo.w, geo.h, e.sharpen / 100.0, e.sharpen_radius.clamp(0.3, 5.0) * scale);
+        sharpen(&mut px, w, h, e.sharpen / 100.0, e.sharpen_radius.clamp(0.3, 5.0) * scale);
+    }
+    if e.grain > 0.0 {
+        let mono = e.mono.enabled && e.mono.amount >= 50.0;
+        film_grain(&mut px, w, h, e.grain / 100.0, e.grain_size, mono);
+    }
+    if e.edge_burn > 0.0 {
+        edge_burn(&mut px, w, h, e.edge_burn / 100.0);
+    }
+    if o.zones {
+        px.par_iter_mut().for_each(|p| {
+            let lin = srgb_to_linear(style::luma(*p).clamp(0.0, 1.0));
+            let v = linear_to_srgb(style::zone_value(style::zone_of(lin) as f32));
+            *p = [v, v, v];
+        });
     }
     if o.clip_warnings {
         px.par_iter_mut().for_each(|p| {
@@ -170,8 +183,7 @@ struct ToneLut {
 }
 
 impl ToneLut {
-    fn new(e: &Edits, is_raw: bool) -> ToneLut {
-        let m = channel_gains(e);
+    fn new(e: &Edits, is_raw: bool, m: [f32; 3]) -> ToneLut {
         let curve = Spline::new(&e.curve);
         let t = [0, 1, 2].map(|c| {
             (0..LUT_N)
@@ -194,18 +206,144 @@ impl ToneLut {
     }
 }
 
-/// White balance shift and exposure as per-channel linear gains.
-fn channel_gains(e: &Edits) -> [f32; 3] {
+/// White balance shift as per-channel linear gains (luminance-neutral).
+fn wb_gains(e: &Edits) -> [f32; 3] {
     let t = e.temp / 100.0;
     let u = e.tint / 100.0;
     let (r, g, b) = ((0.35 * t).exp(), (-0.3 * u).exp(), (-0.35 * t).exp());
     let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    let ev = 2f32.powf(e.exposure.clamp(-5.0, 5.0));
-    [r / lum * ev, g / lum * ev, b / lum * ev]
+    [r / lum, g / lum, b / lum]
+}
+
+fn ev_gain(e: &Edits) -> f32 {
+    2f32.powf(e.exposure.clamp(-5.0, 5.0))
+}
+
+/// Everything that happens to one pixel, in order: white balance, exposure,
+/// tone; then either the black-and-white print path (film/filter mix, paper,
+/// toner) or the colour path (HSL, harmony, film rendition).
+pub struct PixelPipe {
+    lut: ToneLut,
+    color: ColorOps,
+    harmony: Option<HarmonyOp>,
+    stock: Option<StockOp>,
+    mono: Option<MonoPipe>,
+}
+
+struct MonoPipe {
+    /// Film/filter weights folded together with white balance.
+    w: [f32; 3],
+    lut: ToneLut,
+    print: Vec<f32>,
+    toner: style::Toner,
+    toner_amount: f32,
+    amount: f32,
+}
+
+const PRINT_N: usize = 1024;
+
+impl PixelPipe {
+    pub fn new(e: &Edits, is_raw: bool) -> PixelPipe {
+        let wb = wb_gains(e);
+        let ev = ev_gain(e);
+        let mono = (e.mono.enabled && e.mono.amount > 0.0).then(|| {
+            let fw = style::mono_weights(e.mono.film, e.mono.filter);
+            MonoPipe {
+                w: [fw[0] * wb[0], fw[1] * wb[1], fw[2] * wb[2]],
+                lut: ToneLut::new(e, is_raw, [ev; 3]),
+                print: (0..PRINT_N).map(|i| style::mono_print_curve(i as f32 / (PRINT_N - 1) as f32, &e.mono)).collect(),
+                toner: e.mono.toner,
+                toner_amount: e.mono.toner_amount,
+                amount: (e.mono.amount / 100.0).clamp(0.0, 1.0),
+            }
+        });
+        PixelPipe {
+            lut: ToneLut::new(e, is_raw, wb.map(|g| g * ev)),
+            color: ColorOps::new(e),
+            harmony: HarmonyOp::new(&e.harmony),
+            stock: StockOp::new(&e.film),
+            mono,
+        }
+    }
+
+    pub fn halation(&self) -> f32 {
+        if self.mono.is_some() { 0.0 } else { self.stock.as_ref().map(|s| s.halation()).unwrap_or(0.0) }
+    }
+
+    #[inline]
+    pub fn apply(&self, p: [f32; 3]) -> [f32; 3] {
+        let colour = |p: [f32; 3]| {
+            let mut rgb = [self.lut.apply(0, p[0]), self.lut.apply(1, p[1]), self.lut.apply(2, p[2])];
+            rgb = self.color.apply(rgb);
+            if let Some(h) = &self.harmony {
+                rgb = h.apply(rgb);
+            }
+            if let Some(s) = &self.stock {
+                rgb = s.apply(rgb);
+            }
+            rgb
+        };
+        let Some(m) = &self.mono else { return colour(p) };
+        let v = (m.w[0] * p[0] + m.w[1] * p[1] + m.w[2] * p[2]).max(0.0);
+        let x = m.lut.apply(0, v);
+        let f = x.clamp(0.0, 1.0) * (PRINT_N - 1) as f32;
+        let i = (f as usize).min(PRINT_N - 2);
+        let l = m.print[i] + (m.print[i + 1] - m.print[i]) * (f - i as f32);
+        let bw = style::tone_print(l, m.toner, m.toner_amount);
+        if m.amount >= 1.0 {
+            return bw;
+        }
+        let c = colour(p);
+        [0, 1, 2].map(|k| c[k] + (bw[k] - c[k]) * m.amount)
+    }
+}
+
+/// Output (display-encoded) value of the pixel at normalised position
+/// (`nx`, `ny`) of the rendered image, ignoring spatial effects. Averages a
+/// small neighbourhood. Used by the Zone System placement tool.
+pub fn probe(src: &Linear, e: &Edits, nx: f32, ny: f32) -> [f32; 3] {
+    let geo = geometry(src, e, false);
+    let pipe = PixelPipe::new(e, src.is_raw);
+    let cx = (nx.clamp(0.0, 1.0) * (geo.w - 1) as f32) as i64;
+    let cy = (ny.clamp(0.0, 1.0) * (geo.h - 1) as f32) as i64;
+    let r = ((geo.w.max(geo.h) as f32 * 0.004) as i64).max(1);
+    let mut acc = [0f32; 3];
+    let mut n = 0.0;
+    for y in (cy - r).max(0)..=(cy + r).min(geo.h as i64 - 1) {
+        for x in (cx - r).max(0)..=(cx + r).min(geo.w as i64 - 1) {
+            let o = pipe.apply(geo.px[y as usize * geo.w + x as usize]);
+            for c in 0..3 {
+                acc[c] += o[c];
+            }
+            n += 1.0;
+        }
+    }
+    acc.map(|v| v / n)
+}
+
+/// Zone System placement: find the exposure that puts the tone at
+/// (`nx`, `ny`) in `zone`, and anchor N+/N- development there.
+pub fn place_zone(src: &Linear, e: &Edits, nx: f32, ny: f32, zone: u8) -> Edits {
+    let target = style::zone_value(zone.min(10) as f32).min(1.0);
+    let lum = |ev: f32| {
+        let t = Edits { exposure: ev, ..e.clone() };
+        srgb_to_linear(style::luma(probe(src, &t, nx, ny)).clamp(0.0, 1.0))
+    };
+    let (mut lo, mut hi) = (-5.0f32, 5.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if lum(mid) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Edits { exposure: ((lo + hi) / 2.0 * 100.0).round() / 100.0, zone_anchor: Some(zone.min(10)), ..e.clone() }
 }
 
 /// Linear value -> tone-mapped display value.
 fn tone(v: f32, e: &Edits, is_raw: bool, curve: &Spline) -> f32 {
+    let v = style::zone_develop(v, e.zone_anchor, e.zone_n);
     let v = if is_raw {
         // Soft shoulder so pushed highlights roll off instead of clipping hard.
         if v <= 0.8 { v } else { 0.8 + 0.2 * (1.0 - (-(v - 0.8) / 0.2).exp()) }
@@ -507,6 +645,88 @@ fn noise_reduction(px: &mut [[f32; 3]], w: usize, h: usize, luma_amt: f32, color
     }
 }
 
+/// Halation (colour: red-orange glow scattering around highlights) or bloom
+/// (black and white: a soft, luminous diffusion like a printing diffuser).
+/// Radii are proportional to the image, so preview and export match.
+fn style_glow(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, mono: bool) {
+    let long = w.max(h) as f32;
+    let threshold = if mono { 0.45 } else { 0.7 };
+    let mask: Vec<f32> = px.par_iter().map(|p| style::smoothstep(threshold, 1.0, style::luma(*p))).collect();
+    let sigma = long * if mono { 0.012 } else { 0.006 };
+    let b = blur(&mask, w, h, sigma.max(0.5));
+    let tint = if mono { [1.0, 1.0, 1.0] } else { [1.0, 0.32, 0.12] };
+    let k = amount.clamp(0.0, 1.5) * if mono { 0.5 } else { 0.8 };
+    px.par_iter_mut().zip(b.par_iter()).for_each(|(p, &g)| {
+        for c in 0..3 {
+            let a = (g * tint[c] * k).min(1.0);
+            // Screen blend: light adds without clipping hard.
+            p[c] = 1.0 - (1.0 - p[c].clamp(0.0, 1.0)) * (1.0 - a);
+        }
+    });
+}
+
+/// Film grain: deterministic noise, clumped to a size relative to the frame,
+/// strongest in the midtones as on film. Colour film adds a little chroma grain.
+fn film_grain(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, size: f32, mono: bool) {
+    let long = w.max(h) as f32;
+    // Size 1 ≈ 35 mm 400-speed film: grain clumps ~1/3000 of the frame.
+    let sigma = size.clamp(0.25, 3.0) * long / 3000.0;
+    let field = |seed: u32| -> Vec<f32> {
+        let n: Vec<f32> = (0..w * h)
+            .into_par_iter()
+            .map(|i| {
+                let (x, y) = ((i % w) as u32, (i / w) as u32);
+                style::hash_noise(x, y, seed) + style::hash_noise(x, y, seed ^ 0x9e37)
+            })
+            .collect();
+        if sigma < 0.6 {
+            return n;
+        }
+        let b = blur(&n, w, h, sigma);
+        // Re-normalise: blurring shrinks the variance.
+        let var = b.iter().map(|v| v * v).sum::<f32>() / b.len().max(1) as f32;
+        let k = 0.8 / var.sqrt().max(1e-6);
+        b.into_iter().map(|v| v * k).collect()
+    };
+    let lum = field(17);
+    let chroma = if mono { None } else { Some((field(29), field(43))) };
+    let a = amount.clamp(0.0, 1.0) * 0.11;
+    px.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let l = style::luma(*p).clamp(0.0, 1.0);
+        let strength = a * (4.0 * l * (1.0 - l)).max(0.0).powf(0.6) + a * 0.08;
+        let g = lum[i] * strength;
+        match &chroma {
+            None => p.iter_mut().for_each(|v| *v = (*v + g).clamp(0.0, 1.0)),
+            Some((c1, c2)) => {
+                let (d1, d2) = (c1[i] * strength * 0.25, c2[i] * strength * 0.25);
+                p[0] = (p[0] + g + d1).clamp(0.0, 1.0);
+                p[1] = (p[1] + g - 0.5 * (d1 + d2)).clamp(0.0, 1.0);
+                p[2] = (p[2] + g + d2).clamp(0.0, 1.0);
+            }
+        }
+    });
+}
+
+/// Darkroom edge burning: extra print exposure toward the borders, following
+/// the frame's rectangle (unlike a round lens vignette).
+fn edge_burn(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32) {
+    let band = 0.25;
+    px.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let ny = (y as f32 + 0.5) / h as f32;
+        let by = 1.0 - style::smoothstep(0.0, band, ny.min(1.0 - ny));
+        for (x, p) in row.iter_mut().enumerate() {
+            let nx = (x as f32 + 0.5) / w as f32;
+            let bx = 1.0 - style::smoothstep(0.0, band * h as f32 / w as f32 * 1.2, nx.min(1.0 - nx));
+            let burn = 1.0 - (1.0 - bx.powf(1.5)) * (1.0 - by.powf(1.5));
+            // One stop at full strength, applied in linear light like real exposure.
+            let gain = 2f32.powf(-amount.clamp(0.0, 1.0) * burn);
+            for v in p.iter_mut() {
+                *v = linear_to_srgb(srgb_to_linear(v.clamp(0.0, 1.0)) * gain);
+            }
+        }
+    });
+}
+
 fn sharpen(px: &mut [[f32; 3]], w: usize, h: usize, amount: f32, radius: f32) {
     let y: Vec<f32> = px.par_iter().map(luma).collect();
     let yb = blur(&y, w, h, radius.max(0.3));
@@ -602,6 +822,36 @@ mod tests {
         assert_eq!((r.w, r.h), (24, 32));
         let r = render(&lin, &e, &RenderOpts { ignore_crop: true, ..Default::default() });
         assert_eq!((r.w, r.h), (48, 64));
+    }
+
+    #[test]
+    fn zone_placement_lands_in_the_chosen_zone() {
+        let lin = from_rendered(&gradient());
+        let looks = [
+            Edits::default(),
+            crate::develop::looks::apply("platinum", &Edits::default(), 100.0, &Default::default()),
+            crate::develop::looks::apply("vivid-slide", &Edits::default(), 100.0, &Default::default()),
+        ];
+        for base in looks {
+            for zone in [3u8, 5, 8] {
+                let e = place_zone(&lin, &base, 0.5, 0.5, zone);
+                let got = style::zone_of(srgb_to_linear(style::luma(probe(&lin, &e, 0.5, 0.5))));
+                assert_eq!(got, zone, "placed in {zone}, landed in {got} (exposure {})", e.exposure);
+                assert_eq!(e.zone_anchor, Some(zone));
+            }
+        }
+    }
+
+    #[test]
+    fn mono_and_styles_render() {
+        let lin = from_rendered(&gradient());
+        let e = crate::develop::looks::apply("street", &Edits::default(), 100.0, &Default::default());
+        let r = render(&lin, &e, &RenderOpts::default());
+        // Untoned black and white is neutral.
+        assert!(r.px.iter().all(|p| (p[0] - p[1]).abs() < 1e-4 && (p[1] - p[2]).abs() < 1e-4));
+        let z = render(&lin, &Edits::default(), &RenderOpts { zones: true, ..Default::default() });
+        let levels: std::collections::BTreeSet<u8> = z.px.iter().map(|p| (p[0] * 255.0) as u8).collect();
+        assert!(levels.len() <= 11, "{levels:?}");
     }
 
     #[test]

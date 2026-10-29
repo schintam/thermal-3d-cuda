@@ -87,6 +87,84 @@ export interface Edits {
   sharpenRadius: number;
   nrLuma: number;
   nrColor: number;
+  mono: Mono;
+  film: FilmLook;
+  grain: number;
+  grainSize: number;
+  glow: number;
+  edgeBurn: number;
+  harmony: Harmony | null;
+  zoneAnchor: number | null;
+  zoneN: number;
+}
+
+export type MonoFilm = "panchromatic" | "classicPan" | "fineGrain" | "ortho" | "infrared";
+export type LensFilter = "none" | "yellow" | "orange" | "red" | "green" | "blue";
+export type Toner = "none" | "selenium" | "sepia" | "gold" | "platinum" | "cyanotype";
+export type ColorStock = "none" | "portraitNegative" | "vividSlide" | "classicSlide" | "tungstenCine" | "fadedPrint" | "mutedEarth";
+export type HarmonyTemplate = "monochromatic" | "analogous" | "complementary" | "splitAccent" | "square" | "dualAnalogous";
+
+export interface Mono {
+  enabled: boolean;
+  amount: number;
+  film: MonoFilm;
+  filter: LensFilter;
+  grade: number;
+  soft: number;
+  hard: number;
+  toner: Toner;
+  tonerAmount: number;
+}
+
+export interface FilmLook {
+  stock: ColorStock;
+  strength: number;
+}
+
+export interface Harmony {
+  template: HarmonyTemplate;
+  angle: number;
+  amount: number;
+}
+
+export interface ColourAnalysis {
+  palette: { rgb: [number, number, number]; share: number }[];
+  harmonies: { template: HarmonyTemplate; label: string; angle: number; score: number }[];
+  hues: number[];
+}
+
+export type Guide = "thirds" | "golden" | "centre" | "level";
+
+export interface ExploreLook {
+  id: string;
+  name: string;
+  group: string;
+  description: string;
+  edits: Edits;
+}
+
+export interface ExploreComposition {
+  label: string;
+  guide: Guide;
+  crop: Crop | null;
+  angle: number;
+  subject: [number, number];
+  score: number;
+  edits: Edits;
+}
+
+export interface Explore {
+  looks: ExploreLook[];
+  compositions: ExploreComposition[];
+  colour: ColourAnalysis;
+  subject: [number, number];
+}
+
+export interface ViewOpts {
+  ignoreCrop?: boolean;
+  clipWarnings?: boolean;
+  zones?: boolean;
+  small?: boolean;
 }
 
 export const defaultEdits = (): Edits => ({
@@ -113,6 +191,25 @@ export const defaultEdits = (): Edits => ({
   sharpenRadius: 1,
   nrLuma: 0,
   nrColor: 0,
+  mono: {
+    enabled: false,
+    amount: 100,
+    film: "panchromatic",
+    filter: "none",
+    grade: 2,
+    soft: 0,
+    hard: 0,
+    toner: "none",
+    tonerAmount: 0,
+  },
+  film: { stock: "none", strength: 100 },
+  grain: 0,
+  grainSize: 1,
+  glow: 0,
+  edgeBurn: 0,
+  harmony: null,
+  zoneAnchor: null,
+  zoneN: 0,
 });
 
 export interface Preset {
@@ -175,8 +272,14 @@ export const api = {
   settings: () => invoke<{ writeSidecars: boolean; platform: string; picturesDir: string | null }>("settings"),
   setWriteSidecars: (on: boolean) => invoke<void>("set_write_sidecars", { on }),
 
-  async render(id: number, edits: Edits, ignoreCrop: boolean, clipWarnings: boolean): Promise<Rendered> {
-    const buf = await invoke<ArrayBuffer>("render", { id, edits, ignoreCrop, clipWarnings });
+  explore: (id: number, edits: Edits) => invoke<Explore>("explore", { id, edits }),
+  lookEdits: (look: string, base: Edits, strength: number, harmony: [HarmonyTemplate, number] | null) =>
+    invoke<Edits>("look_edits", { look, base, strength, harmony }),
+  placeZone: (id: number, edits: Edits, x: number, y: number, zone: number) => invoke<Edits>("place_zone", { id, edits, x, y, zone }),
+  analyzeColour: (id: number, edits: Edits) => invoke<ColourAnalysis>("analyze_colour", { id, edits }),
+
+  async render(id: number, edits: Edits, opts: ViewOpts = {}): Promise<Rendered> {
+    const buf = await invoke<ArrayBuffer>("render", { id, edits, opts });
     const view = new DataView(buf);
     const width = view.getUint32(0, true);
     const height = view.getUint32(4, true);

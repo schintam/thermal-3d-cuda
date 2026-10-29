@@ -480,6 +480,8 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     ["Enter / E", "Loupe"],
     ["G / Esc", "Grid"],
     ["C", "Compare selected (2–4) or this + next"],
+    ["V", "Explore: looks & compositions"],
+    ["[ / ]", "Explore: previous / next look · Enter applies"],
     ["D", "Develop"],
     ["Z", "Zoom 100% / fit"],
     ["I", "Info overlay"],

@@ -6,7 +6,7 @@ Cull and develop photos locally, in one cross-platform desktop app. No account, 
 
 ```
 keepers-studio/
-├── crates/keepers-core/   Engine: catalog, import, previews, scores, bursts, develop, export (Rust, 50 tests)
+├── crates/keepers-core/   Engine: catalog, import, previews, scores, bursts, develop, export (Rust, 62 tests)
 ├── src-tauri/             Desktop shell: commands, image protocols, events
 └── src/                   UI (React)
 ```
@@ -74,8 +74,23 @@ cargo run -p keepers-core --release --example make_shoot -- C:\temp\shoot
    | `S` | Stack / unstack bursts |
    | `Ctrl+Z` | Undo |
 
-3. **Develop** (`D`). The filmstrip shows only your picks. Available tools: white balance, exposure, contrast, highlights/shadows/whites/blacks, vibrance/saturation, tone curve, HSL, crop/straighten/rotate (`R`), sharpening, noise reduction, and presets. Copy and paste settings with Ctrl+Shift+C / V. Hold `\` for before/after, and press `J` for clipping warnings.
-4. **Export** (Ctrl+E): Web / Social / Print / Full-size presets, a naming template, background progress, and a per-photo export history.
+3. **Explore** (`V`): the easy way to a finished photo. Your photo is shown in two carousels:
+   - **Looks**: renditions grounded in real photographic processes, all rendered on your photo.
+     - *Black and white*: Silver Gelatin, Dramatic Sky (red filter), Platinum Print, Selenium Deep, Sepia Heritage, Cyanotype, Infrared, Pushed Street, Orthochromatic.
+     - *Colour*: Portrait Negative, Vivid Slide, Classic Slide, Tungsten Cine (with halation), Faded Print, Muted Earth, Colour Harmony, Golden Light.
+   - **Compositions**: framings computed from the photo itself. They find where the eye goes (colour distinctiveness plus what's in focus) and place it on the rule of thirds or the golden section, at the original ratio, 1:1, 4:5, 16:9 or 2.39:1. A **Level horizon** suggestion appears when the photo is tilted.
+
+   Pick one of each, adjust Strength, Grain, Glow and Print edges, then press Enter to apply. `[` / `]` step through the looks. "Apply look to all picks" does a whole shoot.
+4. **Develop** (`D`). The filmstrip shows only your picks. Available tools: white balance, exposure, contrast, highlights/shadows/whites/blacks, vibrance/saturation, tone curve, HSL, crop/straighten/rotate (`R`), sharpening, noise reduction, and presets. Copy and paste settings with Ctrl+Shift+C / V. Hold `\` for before/after, and press `J` for clipping warnings.
+   The photographic craft behind the looks is also available directly, for those who want it:
+   - *Black & White*: film character (neutral, classic 400, fine grain, orthochromatic, infrared), coloured lens filters, paper grade 0–5 with **split-grade printing** (soft and hard exposures), and **toners** (selenium, sepia, gold, platinum, cyanotype).
+   - *Film & Character*: colour film renditions, grain scaled to film format (35mm / 120 / 4×5), glow (bloom in B&W, halation in colour), and darkroom **edge burning**.
+   - *Colour Harmony*: the photo's palette and hue wheel, the best-fitting colour scheme (analogous, complementary, accent…), and a Harmonize slider that pulls stray hues into it. Neutral colours are left alone.
+   - *Zone System*: a zone map (0–X) of the print, a **place a tone in a zone** tool (click the sky, choose Zone VIII), and N+/N− development to expand or contract the tones around it.
+   - *Crop guides*: thirds, golden section, golden spiral (click again to turn it), diagonal, centre.
+
+   Everything is deterministic image processing on your computer. There is no AI and no cloud.
+5. **Export** (Ctrl+E): Web / Social / Print / Full-size presets, a naming template, background progress, and a per-photo export history.
 
 On macOS the shortcuts use Cmd in place of Ctrl.
 

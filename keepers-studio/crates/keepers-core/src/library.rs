@@ -4,7 +4,7 @@
 
 use crate::bursts;
 use crate::catalog::{path_str, Catalog, Folder, NewPhoto, Photo};
-use crate::develop::{pipeline, source, Edits, RenderOpts};
+use crate::develop::{composition, looks, pipeline, source, Edits, HarmonyTemplate, RenderOpts};
 use crate::export::{self, ExportSettings};
 use crate::formats::{self, Kind};
 use crate::preview::{self, Source};
@@ -64,6 +64,45 @@ pub struct Preset {
     pub builtin: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ViewOpts {
+    pub ignore_crop: bool,
+    pub clip_warnings: bool,
+    /// Zone System map.
+    pub zones: bool,
+    /// Small, fast render for carousel cards.
+    pub small: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExploreLook {
+    #[serde(flatten)]
+    pub look: looks::Look,
+    pub edits: Edits,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExploreComposition {
+    #[serde(flatten)]
+    pub suggestion: composition::Suggestion,
+    pub edits: Edits,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Explore {
+    pub looks: Vec<ExploreLook>,
+    pub compositions: Vec<ExploreComposition>,
+    pub colour: looks::ColourAnalysis,
+    pub subject: [f32; 2],
+}
+
+/// Long edge of the source used for cards and analysis.
+const SMALL_EDGE: usize = 640;
+
 pub struct RenderResult {
     pub jpeg: Vec<u8>,
     pub width: u32,
@@ -82,6 +121,7 @@ pub struct Library {
     updated: Mutex<Vec<i64>>,
     regroup: AtomicBool,
     develop_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
+    small_cache: Mutex<Vec<(i64, Arc<source::Linear>)>>,
     write_sidecars: AtomicBool,
 }
 
@@ -103,6 +143,7 @@ impl Library {
             updated: Mutex::new(Vec::new()),
             regroup: AtomicBool::new(false),
             develop_cache: Mutex::new(Vec::new()),
+            small_cache: Mutex::new(Vec::new()),
             write_sidecars: AtomicBool::new(write_sidecars),
         });
         let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).clamp(2, 12);
@@ -504,13 +545,83 @@ impl Library {
         }
     }
 
-    pub fn render(&self, id: i64, edits: &Edits, ignore_crop: bool, clip_warnings: bool) -> Result<RenderResult> {
-        let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
-        let src = self.develop_source(&photo)?;
+    /// A small copy of the develop source for carousel cards and analysis.
+    fn small_source(&self, photo: &Photo) -> Result<Arc<source::Linear>> {
+        {
+            let c = self.small_cache.lock();
+            if let Some((_, s)) = c.iter().find(|(id, _)| *id == photo.id) {
+                return Ok(s.clone());
+            }
+        }
+        let small = Arc::new(self.develop_source(photo)?.downscale(SMALL_EDGE));
+        let mut c = self.small_cache.lock();
+        c.insert(0, (photo.id, small.clone()));
+        c.truncate(8);
+        Ok(small)
+    }
+
+    fn render_opts(photo: &Photo, src: &source::Linear, ignore_crop: bool, clip_warnings: bool, zones: bool) -> RenderOpts {
         let full_long = photo.width.zip(photo.height).map(|(w, h)| w.max(h) as f32).unwrap_or(src.long_edge() as f32);
-        let opts = RenderOpts { ignore_crop, clip_warnings, scale: (src.long_edge() as f32 / full_long).min(1.0) };
-        let (img, histogram) = pipeline::render_image(&src, edits, &opts);
-        Ok(RenderResult { jpeg: preview::encode_jpeg(&img, 90)?, width: img.width(), height: img.height(), histogram })
+        RenderOpts { ignore_crop, clip_warnings, scale: (src.long_edge() as f32 / full_long).min(1.0), zones }
+    }
+
+    /// Render for display. `small` uses a ~600 px source (carousel cards).
+    pub fn render(&self, id: i64, edits: &Edits, opts: &ViewOpts) -> Result<RenderResult> {
+        let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
+        let src = if opts.small { self.small_source(&photo)? } else { self.develop_source(&photo)? };
+        let ro = Self::render_opts(&photo, &src, opts.ignore_crop, opts.clip_warnings, opts.zones);
+        let (img, histogram) = pipeline::render_image(&src, edits, &ro);
+        Ok(RenderResult { jpeg: preview::encode_jpeg(&img, if opts.small { 85 } else { 90 })?, width: img.width(), height: img.height(), histogram })
+    }
+
+    /// Everything the Explore view needs: looks rendered on this photo (as
+    /// edit stacks), composition suggestions and a colour analysis.
+    pub fn explore(&self, id: i64, base: &Edits) -> Result<Explore> {
+        let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
+        let src = self.small_source(&photo)?;
+        let plain = looks::without_style(base);
+        // Compose on the straightened, uncropped frame.
+        let uncropped = pipeline::render(&src, &plain, &Self::render_opts(&photo, &src, true, false, false));
+        let composition = composition::analyze(&uncropped);
+        let cropped = pipeline::render(&src, &plain, &Self::render_opts(&photo, &src, false, false, false));
+        let colour = looks::analyze_colour(&cropped);
+        let ctx = looks::LookContext { harmony: colour.harmonies.first().map(|h| (h.template, h.angle)) };
+        let looks = looks::catalog()
+            .into_iter()
+            .map(|l| ExploreLook { edits: looks::apply(l.id, base, 100.0, &ctx), look: l })
+            .collect();
+        let compositions = composition
+            .suggestions
+            .iter()
+            .map(|s| ExploreComposition {
+                edits: Edits {
+                    crop: s.crop.or(if s.guide == composition::Guide::Level { base.crop } else { None }),
+                    angle: base.angle + s.angle,
+                    ..base.clone()
+                },
+                suggestion: s.clone(),
+            })
+            .collect();
+        Ok(Explore { looks, compositions, colour, subject: composition.subject })
+    }
+
+    /// Re-apply a look at a different strength (Explore's slider).
+    pub fn look_edits(&self, look: &str, base: &Edits, strength: f32, harmony: Option<(HarmonyTemplate, f32)>) -> Edits {
+        looks::apply(look, base, strength, &looks::LookContext { harmony })
+    }
+
+    /// Zone System: put the tone at (`nx`, `ny`) of the rendered image in `zone`.
+    pub fn place_zone(&self, id: i64, edits: &Edits, nx: f32, ny: f32, zone: u8) -> Result<Edits> {
+        let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
+        let src = self.small_source(&photo)?;
+        Ok(pipeline::place_zone(&src, edits, nx, ny, zone))
+    }
+
+    pub fn analyze_colour(&self, id: i64, edits: &Edits) -> Result<looks::ColourAnalysis> {
+        let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
+        let src = self.small_source(&photo)?;
+        let plain = Edits { harmony: None, ..edits.clone() };
+        Ok(looks::analyze_colour(&pipeline::render(&src, &plain, &Self::render_opts(&photo, &src, false, false, false))))
     }
 
     pub fn photo_edited(&self, id: i64) -> bool {
@@ -607,7 +718,7 @@ pub fn builtin_presets() -> Vec<Preset> {
         p("Neutral", Edits::default()),
         p("Punchy", Edits { contrast: 30.0, vibrance: 25.0, shadows: 15.0, highlights: -20.0, ..Default::default() }),
         p("Soft Matte", Edits { contrast: -20.0, curve: vec![[0.0, 0.06], [0.5, 0.5], [1.0, 0.96]], saturation: -10.0, ..Default::default() }),
-        p("Black & White", Edits { saturation: -100.0, contrast: 25.0, ..Default::default() }),
+        p("Black & White", looks::apply("silver", &Edits::default(), 100.0, &Default::default())),
         p("Warm", Edits { temp: 20.0, vibrance: 10.0, ..Default::default() }),
         p("Cool", Edits { temp: -20.0, ..Default::default() }),
     ]
@@ -867,7 +978,12 @@ mod tests {
         }
 
         let e = Edits { exposure: 0.5, ..Default::default() };
-        let r = lib.render(ids[0], &e, false, false).unwrap();
+        let r = lib.render(ids[0], &e, &ViewOpts::default()).unwrap();
+        let ex = lib.explore(ids[0], &e).unwrap();
+        assert!(ex.looks.len() >= 15 && !ex.compositions.is_empty());
+        assert!(lib.render(ids[0], &ex.looks[0].edits, &ViewOpts { small: true, ..Default::default() }).unwrap().width <= 640);
+        let z = lib.place_zone(ids[0], &e, 0.5, 0.5, 6).unwrap();
+        assert_eq!(z.zone_anchor, Some(6));
         assert_eq!((r.width, r.height), (1200, 800));
         lib.save_edits(&ids[..1], &e).unwrap();
         assert_eq!(lib.edits(ids[0]).unwrap(), e);

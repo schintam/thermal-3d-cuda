@@ -908,3 +908,242 @@ code {
 .import-tabs button {
   flex: 1;
 }
+
+/* ---------- explore ---------- */
+.explore {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ex-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.ex-stage {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #0f0f10;
+}
+.ex-stage img,
+.ex-guide {
+  position: absolute;
+}
+.ex-side {
+  width: 290px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  padding: 8px 14px;
+  overflow-y: auto;
+}
+.ex-side h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--dim);
+  margin: 10px 0 4px;
+}
+.ex-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.ex-comp {
+  margin: 10px 0;
+}
+.ex-actions {
+  margin-top: 12px;
+}
+.ex-rows {
+  flex-shrink: 0;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.ex-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+}
+.ex-row-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 6px 4px;
+  border-right: 1px solid var(--line);
+}
+.ex-cards {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.ex-group {
+  display: flex;
+  gap: 8px;
+  position: relative;
+  padding-top: 0;
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+}
+.ex-group-label {
+  position: absolute;
+  top: -6px;
+  left: 10px;
+  font-size: 9px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.ex-card {
+  flex-shrink: 0;
+  width: 132px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  background: #1a1a1c;
+}
+.ex-card.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.ex-thumb {
+  position: relative;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #111;
+}
+.ex-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+}
+.ex-thumb .guides {
+  position: absolute;
+  inset: 0;
+}
+.ex-skeleton {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #1b1b1d, #262628, #1b1b1d);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite linear;
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.ex-card span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-loading {
+  align-self: center;
+  padding: 0 12px;
+}
+.guides {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.guides line,
+.guides path {
+  stroke: rgba(255, 255, 255, 0.7);
+  stroke-width: 1;
+}
+.guides {
+  /* Legible on bright and dark photos alike. */
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.85));
+}
+.guides.subtle line {
+  stroke: rgba(255, 255, 255, 0.4);
+}
+.guides .subject {
+  fill: rgba(245, 180, 40, 0.9);
+  stroke: #111;
+  stroke-width: 1;
+}
+.swatches {
+  display: flex;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.huewheel {
+  width: 140px;
+  display: block;
+  margin: 6px auto;
+}
+.huewheel .sector {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 4;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+.choice {
+  margin: 6px 0;
+}
+.choice .aspects button {
+  font-size: 11px;
+}
+.zone-strip {
+  display: flex;
+  margin: 6px 0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.zone-strip span {
+  flex: 1;
+  text-align: center;
+  font-size: 10px;
+  padding: 3px 0;
+}
+.zone-strip.floating {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 360px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+.zone-picker {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  z-index: 5;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.zone-picker button {
+  min-width: 30px;
+  font-weight: 600;
+  border: none;
+}
+.develop {
+  position: relative;
+}

@@ -5,13 +5,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Edits, EngineEvent, ExportSettings, Folder, Photo, api, modKey, modLabel } from "./api";
 import { Compare } from "./components/Compare";
 import { Develop } from "./components/Develop";
+import { Explore } from "./components/Explore";
 import { ExportDialog, ExportScope, HelpOverlay, ImportDialog } from "./components/Dialogs";
 import { Filmstrip } from "./components/Filmstrip";
 import { Grid } from "./components/Grid";
 import { Loupe } from "./components/Loupe";
 import { FIT, ZoomState } from "./components/ZoomView";
 
-type View = "grid" | "loupe" | "compare" | "develop";
+type View = "grid" | "loupe" | "compare" | "explore" | "develop";
 type FlagFilter = "all" | "picks" | "rejects" | "unflagged";
 type Modal = { kind: "import"; source?: string } | { kind: "export" } | { kind: "help" } | null;
 
@@ -169,7 +170,7 @@ export default function App() {
     const k = filtered.filter((p) => p.pick === 1);
     return k.length ? k : visible;
   }, [filtered, visible]);
-  const navList = view === "develop" ? keepers : visible;
+  const navList = view === "develop" || view === "explore" ? keepers : visible;
 
   // Keep focus valid as filters change.
   useEffect(() => {
@@ -395,7 +396,7 @@ export default function App() {
           setZoom(FIT);
           return setView(view === "grid" ? "loupe" : "grid");
         case "Enter":
-          if (view === "develop") return;
+          if (view === "develop" || view === "explore") return;
           return setView("loupe");
         case "e":
           return setView("loupe");
@@ -406,6 +407,9 @@ export default function App() {
           return setView("grid");
         case "c":
           return startCompare();
+        case "v":
+          if (focus != null) setView("explore");
+          return;
         case "d":
           if (focus != null) setView("develop");
           return;
@@ -516,9 +520,9 @@ export default function App() {
       <header className="toolbar">
         <div className="brand">Keepers Studio</div>
         <nav className="modes">
-          {(["grid", "loupe", "develop"] as const).map((m) => (
+          {(["grid", "loupe", "explore", "develop"] as const).map((m) => (
             <button key={m} className={view === m || (m === "loupe" && view === "compare") ? "on" : ""} onClick={() => focus != null || m === "grid" ? setView(m) : null}>
-              {m === "grid" ? "Grid  G" : m === "loupe" ? "Loupe  E" : "Develop  D"}
+              {m === "grid" ? "Grid  G" : m === "loupe" ? "Loupe  E" : m === "explore" ? "Explore  V" : "Develop  D"}
             </button>
           ))}
           <button onClick={startCompare} className={view === "compare" ? "on" : ""}>
@@ -574,7 +578,7 @@ export default function App() {
       </header>
 
       <div className="body">
-        {view !== "develop" && (
+        {view !== "develop" && view !== "explore" && (
           <aside className="sidebar">
             <h3>Library</h3>
             <ul className="folders">
@@ -684,6 +688,19 @@ export default function App() {
               onView={setZoom}
             />
           )}
+          {view === "explore" && focusPhoto && (
+            <Explore
+              photo={focusPhoto}
+              keepers={filtered.filter((p) => p.pick === 1)}
+              onSaved={merge}
+              onError={addError}
+              onOpenDevelop={() => {
+                setEditsVersion((v) => v + 1);
+                setView("develop");
+              }}
+              onNotice={(text) => setExportMsg({ text, last: null })}
+            />
+          )}
           {view === "develop" && focusPhoto && (
             <Develop
               photo={focusPhoto}
@@ -701,7 +718,7 @@ export default function App() {
               setBeforeLocked={setBeforeLocked}
             />
           )}
-          {(view === "loupe" || view === "develop" || view === "compare") && (
+          {(view === "loupe" || view === "develop" || view === "compare" || view === "explore") && (
             <Filmstrip
               items={navList}
               focus={focus}
@@ -714,7 +731,7 @@ export default function App() {
               }}
             />
           )}
-          {view === "develop" && keepers === visible && filtered.every((p) => p.pick !== 1) && (
+          {(view === "develop" || view === "explore") && keepers === visible && filtered.every((p) => p.pick !== 1) && (
             <div className="banner">No picks yet — showing all photos. Pick keepers (P) to develop only those.</div>
           )}
         </main>
