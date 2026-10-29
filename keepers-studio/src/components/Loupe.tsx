@@ -10,9 +10,11 @@ interface Props {
   onView: (v: ZoomState) => void;
   showInfo: boolean;
   burstSize: number;
+  /** Why Auto-cull suggested what it did. */
+  note?: string;
 }
 
-export function Loupe({ photo, neighbours, view, onView, showInfo, burstSize }: Props) {
+export function Loupe({ photo, neighbours, view, onView, showInfo, burstSize, note }: Props) {
   // Prefetch the next/previous previews so flipping through is instant.
   useEffect(() => {
     const imgs = neighbours.map((n) => {
@@ -46,6 +48,7 @@ export function Loupe({ photo, neighbours, view, onView, showInfo, burstSize }: 
             </div>
           )}
           {burstSize > 1 && <div>Burst of {burstSize}{photo.burstBest ? " — suggested best" : ""}</div>}
+          {note && <div className="cull-note">{note}</div>}
           {photo.pairPath && <div>RAW + JPEG pair</div>}
           {photo.error && <div className="err">⚠ {photo.error}</div>}
         </div>

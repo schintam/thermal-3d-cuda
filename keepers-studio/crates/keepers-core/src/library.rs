@@ -2,7 +2,7 @@
 //! background workers. UI-framework agnostic; progress is reported through an
 //! event callback.
 
-use crate::bursts;
+use crate::{bursts, cull};
 use crate::catalog::{path_str, Catalog, Folder, NewPhoto, Photo};
 use crate::develop::{composition, looks, pipeline, source, Edits, HarmonyTemplate, RenderOpts};
 use crate::export::{self, ExportSettings};
@@ -510,6 +510,31 @@ impl Library {
         let shots = self.catalog.shots()?;
         let groups = bursts::group(&shots);
         self.catalog.set_groupings(&shots, &groups)
+    }
+
+    /// Auto-cull suggestions for a folder (or the whole catalog). Nothing is
+    /// changed; the UI applies the plan as ordinary, undoable flags.
+    pub fn plan_cull(&self, folder: Option<i64>, opts: &cull::CullOptions) -> Result<cull::CullPlan> {
+        let scores: std::collections::HashMap<i64, scoring::Scores> =
+            self.catalog.shots()?.into_iter().filter_map(|s| s.scores.map(|sc| (s.id, sc))).collect();
+        let photos: Vec<cull::CullPhoto> = self
+            .catalog
+            .photos(folder)?
+            .into_iter()
+            .map(|p| cull::CullPhoto {
+                id: p.id,
+                folder_id: p.folder_id,
+                capture_time: p.capture_time,
+                scores: scores.get(&p.id).copied(),
+                burst_id: p.burst_id,
+                burst_best: p.burst_best,
+                dup_of: p.dup_of,
+                pick: p.pick,
+                rating: p.rating,
+                edited: p.edited,
+            })
+            .collect();
+        Ok(cull::plan(&photos, opts))
     }
 
     pub fn set_write_sidecars(&self, on: bool) -> Result<()> {

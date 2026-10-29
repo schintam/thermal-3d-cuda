@@ -2,8 +2,9 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Edits, EngineEvent, ExportSettings, Folder, Photo, api, modKey, modLabel } from "./api";
+import { CullPlan, CullReason, Edits, EngineEvent, ExportSettings, Folder, Photo, api, modKey, modLabel } from "./api";
 import { Compare } from "./components/Compare";
+import { CullDialog, REASON_TEXT } from "./components/Cull";
 import { Develop } from "./components/Develop";
 import { Explore } from "./components/Explore";
 import { ExportDialog, ExportScope, HelpOverlay, ImportDialog } from "./components/Dialogs";
@@ -14,7 +15,7 @@ import { FIT, ZoomState } from "./components/ZoomView";
 
 type View = "grid" | "loupe" | "compare" | "explore" | "develop";
 type FlagFilter = "all" | "picks" | "rejects" | "unflagged";
-type Modal = { kind: "import"; source?: string } | { kind: "export" } | { kind: "help" } | null;
+type Modal = { kind: "import"; source?: string } | { kind: "export" } | { kind: "help" } | { kind: "cull" } | null;
 
 interface UndoEntry {
   prev: { id: number; pick: number; rating: number }[];
@@ -47,6 +48,8 @@ export default function App() {
   const [beforeHeld, setBeforeHeld] = useState(false);
   const [beforeLocked, setBeforeLocked] = useState(false);
   const [sidecars, setSidecars] = useState(true);
+  /** Why Auto-cull suggested what it did, shown in the loupe. */
+  const [cullNotes, setCullNotes] = useState<Map<number, CullReason>>(new Map());
   const columns = useRef(1);
   /** Until the user navigates, focus follows the first photo as an import fills in. */
   const userFocused = useRef(false);
@@ -291,6 +294,33 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusPhoto, photos, merge, autoAdvance, navList, addError]);
 
+  const applyCull = useCallback(
+    async (plan: CullPlan) => {
+      const want = new Map<number, -1 | 1>();
+      for (const s of plan.suggestions) {
+        const p = byId.get(s.id);
+        const pick = s.verdict === "pick" ? 1 : s.verdict === "reject" ? -1 : null;
+        if (p && pick != null && p.pick !== pick) want.set(s.id, pick);
+      }
+      setCullNotes(new Map(plan.suggestions.filter((s) => s.verdict !== "leave" || s.reason === "alternate" || s.reason === "overLimit").map((s) => [s.id, s.reason])));
+      if (!want.size) return;
+      remember([...want.keys()]);
+      setPhotos((prev) => prev.map((p) => (want.has(p.id) ? { ...p, pick: want.get(p.id)! } : p)));
+      try {
+        for (const pick of [1, -1] as const) {
+          const ids = [...want].filter(([, v]) => v === pick).map(([id]) => id);
+          if (ids.length) merge(await api.setPick(ids, pick));
+        }
+        const picks = [...want.values()].filter((v) => v === 1).length;
+        setExportMsg({ text: `Auto-cull: ${picks} pick${picks === 1 ? "" : "s"}, ${want.size - picks} reject${want.size - picks === 1 ? "" : "s"} — ${modLabel}Z to undo`, last: null });
+      } catch (e) {
+        addError(String(e));
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [byId, merge, addError],
+  );
+
   const copySettings = useCallback(async () => {
     if (focus == null) return;
     try {
@@ -427,6 +457,8 @@ export default function App() {
           return;
         case "s":
           return setCollapse((c) => !c);
+        case "k":
+          return setModal({ kind: "cull" });
         case "a":
           return setAutoAdvance((a) => !a);
         case "r":
@@ -565,6 +597,9 @@ export default function App() {
           )}
         </div>
         <div className="actions">
+          <button className="nowrap" onClick={() => setModal({ kind: "cull" })} title="Suggest picks and rejects for this folder (K)" disabled={!photos.length}>
+            Auto-cull…
+          </button>
           <button onClick={() => setModal({ kind: "import" })} title={`Import (${modLabel}I)`}>
             Import…
           </button>
@@ -677,6 +712,7 @@ export default function App() {
               onView={setZoom}
               showInfo={showInfo}
               burstSize={focusPhoto.burstId != null ? burstCounts.get(focusPhoto.burstId) ?? 1 : 1}
+              note={cullNotes.has(focusPhoto.id) ? `Auto-cull: ${REASON_TEXT[cullNotes.get(focusPhoto.id)!]}` : undefined}
             />
           )}
           {view === "compare" && (
@@ -788,6 +824,7 @@ export default function App() {
         />
       )}
       {modal?.kind === "help" && <HelpOverlay onClose={() => setModal(null)} />}
+      {modal?.kind === "cull" && <CullDialog folderId={folderId} photos={photos} onApply={applyCull} onClose={() => setModal(null)} />}
     </div>
   );
 }

@@ -487,6 +487,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     ["I", "Info overlay"],
     ["B", "Choose this frame as burst best"],
     ["Shift+B", "Accept burst: pick best, reject the rest"],
+    ["K", "Auto-cull this folder (suggests picks and rejects)"],
     ["S", "Stack / unstack bursts"],
     ["A", "Toggle auto-advance after a decision"],
     [`${modLabel}Z`, "Undo last cull decision"],
@@ -515,7 +516,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

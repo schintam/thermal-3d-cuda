@@ -251,6 +251,35 @@ export interface Rendered {
   histogram: [Uint32Array, Uint32Array, Uint32Array];
 }
 
+export type Strictness = "gentle" | "balanced" | "strict";
+export interface CullOptions {
+  strictness: Strictness;
+  maxPicks: number | null;
+  reviseDecided: boolean;
+}
+export type CullReason =
+  | "topOfMoment"
+  | "strongFrame"
+  | "alternate"
+  | "overLimit"
+  | "burstFrame"
+  | "duplicate"
+  | "outOfFocus"
+  | "blown"
+  | "tooDark"
+  | "decided"
+  | "unscored";
+export interface CullSuggestion {
+  id: number;
+  verdict: "pick" | "reject" | "leave";
+  reason: CullReason;
+  moment: number;
+}
+export interface CullPlan {
+  suggestions: CullSuggestion[];
+  moments: number;
+}
+
 export const api = {
   folders: () => invoke<Folder[]>("folders"),
   photos: (folderId: number | null) => invoke<Photo[]>("photos", { folderId }),
@@ -261,6 +290,7 @@ export const api = {
   setPick: (ids: number[], pick: number) => invoke<Photo[]>("set_pick", { ids, pick }),
   setRating: (ids: number[], rating: number) => invoke<Photo[]>("set_rating", { ids, rating }),
   setBurstBest: (id: number) => invoke<Photo[]>("set_burst_best", { id }),
+  planCull: (folderId: number | null, opts: CullOptions) => invoke<CullPlan>("plan_cull", { folderId, opts }),
   getEdits: (id: number) => invoke<Edits>("get_edits", { id }),
   saveEdits: (ids: number[], edits: Edits) => invoke<Photo[]>("save_edits", { ids, edits }),
   warm: (id: number) => invoke<void>("warm", { id }),

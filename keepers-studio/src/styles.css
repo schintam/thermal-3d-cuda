@@ -1180,3 +1180,82 @@ code {
 .treatment button {
   flex: 1;
 }
+
+/* Auto-cull */
+.cull .toggle.small {
+  white-space: normal;
+  margin-top: 4px;
+}
+.cull-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dim);
+}
+.cull-options input[type="number"] {
+  width: 64px;
+}
+.cull-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+.cull-summary > * {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--dim);
+  text-align: left;
+  font: inherit;
+}
+.cull-summary b {
+  display: block;
+  font-size: 20px;
+  color: var(--text);
+}
+.cull-summary button.pick b {
+  color: var(--pick);
+}
+.cull-summary button.reject b {
+  color: var(--reject);
+}
+.cull-summary button {
+  cursor: pointer;
+}
+.cull-summary button.on {
+  border-color: var(--accent);
+}
+.cull-reasons {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.cull-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+.cull-strip img {
+  height: 52px;
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+.warn-text {
+  color: var(--accent);
+}
+.cull .err {
+  color: #ff8a80;
+}
+.cull-note {
+  color: var(--accent);
+}
+button.nowrap {
+  white-space: nowrap;
+}

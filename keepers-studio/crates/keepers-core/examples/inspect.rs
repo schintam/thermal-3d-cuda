@@ -1,7 +1,7 @@
 //! Import a folder into a throwaway catalog and report what the engine sees,
 //! with timings. Useful for checking a real shoot or the 10k-photo targets.
 //!
-//!     cargo run -p keepers-core --release --example inspect -- <folder> [--list]
+//!     cargo run -p keepers-core --release --example inspect -- <folder> [--list] [--cull]
 
 use keepers_core::{Event, Library};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let folder = std::path::PathBuf::from(args.next().expect("usage: inspect <folder> [--list]"));
-    let list = args.any(|a| a == "--list");
+    let folder = std::path::PathBuf::from(args.next().expect("usage: inspect <folder> [--list] [--cull]"));
+    let rest: Vec<String> = args.collect();
+    let list = rest.iter().any(|a| a == "--list");
+    let cull = rest.iter().any(|a| a == "--cull");
     let data = std::env::temp_dir().join(format!("keepers-inspect-{}", std::process::id()));
     let done = Arc::new(AtomicUsize::new(0));
     let total = Arc::new(AtomicUsize::new(usize::MAX));
@@ -90,6 +92,28 @@ fn main() -> anyhow::Result<()> {
                 p.exposure.unwrap_or(0.0) * 100.0,
                 p.camera.as_deref().unwrap_or("-")
             );
+        }
+    }
+    if cull {
+        use keepers_core::cull::{CullOptions, Strictness, Verdict};
+        let names: std::collections::HashMap<i64, &str> = photos.iter().map(|p| (p.id, p.file_name.as_str())).collect();
+        for strictness in [Strictness::Gentle, Strictness::Balanced, Strictness::Strict] {
+            let plan = lib.plan_cull(None, &CullOptions { strictness, ..Default::default() })?;
+            let n = |v| plan.suggestions.iter().filter(|s| s.verdict == v).count();
+            println!(
+                "Auto-cull {strictness:?}: {} moments, {} picks, {} rejects, {} left",
+                plan.moments,
+                n(Verdict::Pick),
+                n(Verdict::Reject),
+                n(Verdict::Leave)
+            );
+            if list && strictness == Strictness::Balanced {
+                let mut s = plan.suggestions.clone();
+                s.sort_by_key(|s| (s.moment, s.id));
+                for s in s {
+                    println!("  m{:<3} {:<28} {:?} ({:?})", s.moment, names[&s.id], s.verdict, s.reason);
+                }
+            }
         }
     }
     drop(lib);

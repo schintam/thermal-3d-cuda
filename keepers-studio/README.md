@@ -46,6 +46,8 @@ Two command-line helpers are useful for testing against real folders:
 ```powershell
 # Import a folder headlessly and report timings, bursts, duplicates and unreadable files
 cargo run -p keepers-core --release --example inspect -- "D:\Photos\Q2 test" --list
+# Add --cull to see what Auto-cull would pick and reject at each strictness
+cargo run -p keepers-core --release --example inspect -- "D:\Photos\Q2 test" --cull
 # Generate a messy synthetic shoot (DNG+JPEG bursts, a duplicate, corrupt files)
 cargo run -p keepers-core --release --example make_shoot -- C:\temp\shoot
 ```
@@ -72,8 +74,18 @@ cargo run -p keepers-core --release --example make_shoot -- C:\temp\shoot
    | `C` | Compare 2–4 selected photos, zoom/pan synced |
    | `B` / `Shift+B` | Choose this burst frame as best / pick best and reject the rest of the burst |
    | `S` | Stack / unstack bursts |
+   | `K` | Auto-cull the folder |
    | `Ctrl+Z` | Undo |
 
+   **Auto-cull** (`K`, or the toolbar button) does a first pass over the whole folder for you:
+   - It splits the shoot into *moments*: photos close together in time, with a new moment after a long pause or a change of scene.
+   - It suggests **rejects** for photos that are out of focus or shaken, have blown highlights, or are far too dark to rescue. It also rejects near-identical copies (the original wins) and the weaker frames of each burst.
+   - It suggests **picks** for the strongest frames of every moment, so the picks cover the whole story, not just its sharpest scene.
+   - Choose *Gentle*, *Balanced* or *Strict*, and optionally "keep at most N picks". With a limit, every moment's best goes in before any moment's second-best.
+   - You see the counts, the reasons and thumbnails before anything changes. Photos you've flagged are left alone unless you say otherwise; starred and edited photos are never touched.
+   - Applying it sets ordinary flags, and one `Ctrl+Z` undoes the whole pass. The loupe's info overlay (`I`) shows why each photo was picked or rejected.
+
+   Focus is judged against the shoot itself, so a dim evening or a soft vintage lens doesn't get rejected wholesale.
 3. **Explore** (`V`): the easy way to a finished photo. Your photo is shown in two carousels:
    - **Looks**: renditions grounded in real photographic processes, all rendered on your photo.
      - *Black and white*: Silver Gelatin, Dramatic Sky (red filter), Platinum Print, Selenium Deep, Sepia Heritage, Cyanotype, Infrared, Pushed Street, Orthochromatic.

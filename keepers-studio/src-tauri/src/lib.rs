@@ -2,6 +2,7 @@
 //! custom URI schemes, and forwards engine events.
 
 use keepers_core::catalog::{Folder, Photo};
+use keepers_core::cull::{CullOptions, CullPlan};
 use keepers_core::develop::{Edits, HarmonyTemplate};
 use keepers_core::export::{self, ExportSettings};
 use keepers_core::library::{CopyOptions, Explore, Preset, ViewOpts};
@@ -135,6 +136,12 @@ async fn set_rating(app: State<'_, App>, ids: Vec<i64>, rating: u8) -> Res<Vec<P
 async fn set_burst_best(app: State<'_, App>, id: i64) -> Res<Vec<Photo>> {
     let lib = app.lib.clone();
     blocking(move || lib.set_burst_best(id)).await
+}
+
+#[tauri::command]
+async fn plan_cull(app: State<'_, App>, folder_id: Option<i64>, opts: CullOptions) -> Res<CullPlan> {
+    let lib = app.lib.clone();
+    blocking(move || lib.plan_cull(folder_id, &opts)).await
 }
 
 #[tauri::command]
@@ -351,6 +358,7 @@ pub fn run() {
             set_pick,
             set_rating,
             set_burst_best,
+            plan_cull,
             get_edits,
             save_edits,
             render,
