@@ -60,6 +60,8 @@ pub struct Folder {
     pub id: i64,
     pub path: String,
     pub count: i64,
+    /// Display name for folders that came from another app's library.
+    pub label: Option<String>,
 }
 
 /// One catalog item, as the UI sees it.
@@ -142,6 +144,11 @@ pub struct NewPhoto {
     /// Header metadata read during the scan, so photos sort by capture time
     /// from the moment they appear.
     pub meta: Option<Meta>,
+    /// Name to show instead of the file name (e.g. Apple Photos stores
+    /// originals under UUIDs but remembers the camera's file name).
+    pub display_name: Option<String>,
+    /// Pick and rating carried over from another app; a Keepers sidecar wins.
+    pub flags: Option<(i8, u8)>,
 }
 
 /// Saved cull state and edits restored from a sidecar.
@@ -170,25 +177,41 @@ impl Catalog {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        // Migrations for catalogs created by earlier versions.
+        let has_label: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('folders') WHERE name = 'label'")?
+            .exists([])?;
+        if !has_label {
+            conn.execute_batch("ALTER TABLE folders ADD COLUMN label TEXT")?;
+        }
         Ok(Catalog { conn: Mutex::new(conn) })
     }
 
     pub fn add_folder(&self, path: &Path) -> Result<i64> {
+        self.add_folder_labeled(path, None)
+    }
+
+    pub fn add_folder_labeled(&self, path: &Path, label: Option<&str>) -> Result<i64> {
         let c = self.conn.lock();
         let p = path_str(path);
         c.execute(
-            "INSERT OR IGNORE INTO folders(path, added_at) VALUES (?1, ?2)",
-            params![p, crate::util::now_ms()],
+            "INSERT OR IGNORE INTO folders(path, added_at, label) VALUES (?1, ?2, ?3)",
+            params![p, crate::util::now_ms(), label],
         )?;
+        if label.is_some() {
+            c.execute("UPDATE folders SET label = ?2 WHERE path = ?1", params![p, label])?;
+        }
         Ok(c.query_row("SELECT id FROM folders WHERE path = ?1", [p], |r| r.get(0))?)
     }
 
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let c = self.conn.lock();
         let mut st = c.prepare(
-            "SELECT f.id, f.path, (SELECT COUNT(*) FROM photos p WHERE p.folder_id = f.id) FROM folders f ORDER BY f.path",
+            "SELECT f.id, f.path, (SELECT COUNT(*) FROM photos p WHERE p.folder_id = f.id), f.label FROM folders f
+             ORDER BY f.label IS NULL, f.label, f.path",
         )?;
-        let rows = st.query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)?, count: r.get(2)? }))?;
+        let rows =
+            st.query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)?, count: r.get(2)?, label: r.get(3)? }))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -216,8 +239,12 @@ impl Catalog {
             )?;
             let mut upd_pair = tx.prepare("UPDATE photos SET pair_path = ?2 WHERE path = ?1 AND pair_path IS NULL")?;
             for p in photos {
-                let name = p.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let r = restore(&p.path);
+                let name = p
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| p.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                let r = restore(&p.path)
+                    .or_else(|| p.flags.map(|(pick, rating)| Restored { pick: pick.clamp(-1, 1), rating: rating.min(5), edits: None }));
                 let n = ins.execute(params![
                     folder_id,
                     path_str(&p.path),
@@ -273,7 +300,7 @@ impl Catalog {
         error: Option<&str>,
     ) -> Result<()> {
         self.conn.lock().execute(
-            "UPDATE photos SET processed = 1, error = ?2, capture_time = ?3, camera = ?4, lens = ?5, iso = ?6,
+            "UPDATE photos SET processed = 1, error = ?2, capture_time = COALESCE(?3, capture_time), camera = ?4, lens = ?5, iso = ?6,
                shutter = ?7, aperture = ?8, focal = ?9, orientation = ?10, width = ?11, height = ?12,
                sharpness = ?13, exposure = ?14, clip_hi = ?15, clip_lo = ?16, dhash = ?17, fp = ?18
              WHERE id = ?1",
@@ -470,7 +497,7 @@ mod tests {
         let c = Catalog::in_memory().unwrap();
         let f = c.add_folder(Path::new("/shoot")).unwrap();
         assert_eq!(c.add_folder(Path::new("/shoot")).unwrap(), f);
-        let np = |p: &str, k| NewPhoto { path: p.into(), kind: k, pair: None, size: 1, mtime: 0, meta: None };
+        let np = |p: &str, k| NewPhoto { path: p.into(), kind: k, pair: None, size: 1, mtime: 0, meta: None, display_name: None, flags: None };
         let ids = c.insert_photos(f, &[np("/shoot/a.dng", Kind::Raw), np("/shoot/b.jpg", Kind::Jpeg)], |_| None).unwrap();
         assert_eq!(ids.len(), 2);
         // Re-import is idempotent.
@@ -489,7 +516,7 @@ mod tests {
     fn manual_burst_best_survives_regroup() {
         let c = Catalog::in_memory().unwrap();
         let f = c.add_folder(Path::new("/s")).unwrap();
-        let np = |p: &str| NewPhoto { path: p.into(), kind: Kind::Jpeg, pair: None, size: 1, mtime: 0, meta: None };
+        let np = |p: &str| NewPhoto { path: p.into(), kind: Kind::Jpeg, pair: None, size: 1, mtime: 0, meta: None, display_name: None, flags: None };
         let ids = c.insert_photos(f, &[np("/s/1.jpg"), np("/s/2.jpg")], |_| None).unwrap();
         let sc = Scores { sharpness: 10.0, ..Default::default() };
         for (i, id) in ids.iter().enumerate() {

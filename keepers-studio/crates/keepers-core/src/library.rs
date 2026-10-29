@@ -8,6 +8,7 @@ use crate::develop::{pipeline, source, Edits, RenderOpts};
 use crate::export::{self, ExportSettings};
 use crate::formats::{self, Kind};
 use crate::preview::{self, Source};
+use crate::sources::{self, ExternalSource};
 use crate::{meta, scoring, sidecar, util};
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -148,12 +149,96 @@ impl Library {
             return Err(anyhow!("{} is not a folder", folder.display()));
         }
         let folder_id = self.catalog.add_folder(folder)?;
-        let status = |msg: String, done, total, finished| {
-            (self.emit)(Event::ImportStatus { message: msg, done, total, finished })
+        self.status(format!("Scanning {}", folder.display()), 0, 0, false);
+        let added = self.insert_new(folder_id, scan(folder))?;
+        self.regroup.store(true, Ordering::SeqCst);
+        (self.emit)(Event::CatalogChanged);
+        self.status(format!("Imported {added} new photos from {}", folder.display()), added, added, true);
+        Ok(added)
+    }
+
+    /// Import from another app's library (Lightroom, Apple Photos, Google
+    /// Takeout) in the background, carrying over its picks and ratings.
+    pub fn import_external(self: &Arc<Self>, source: ExternalSource) {
+        let lib = self.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = lib.import_external_blocking(&source) {
+                (lib.emit)(Event::Error { message: format!("Importing {} failed: {e:#}", source.name()) });
+                lib.status(format!("Import of {} failed", source.name()), 0, 0, true);
+            }
+        });
+    }
+
+    pub fn import_external_blocking(&self, source: &ExternalSource) -> Result<usize> {
+        self.status(format!("Reading {}…", source.name()), 0, 0, false);
+        let collections = match source {
+            ExternalSource::Lightroom { path } => sources::lightroom::read(Path::new(path))?,
+            ExternalSource::ApplePhotos { path } => sources::apple_photos::read(Path::new(path))?,
+            ExternalSource::Takeout { paths, destination } => {
+                let zips: Vec<PathBuf> = paths.iter().map(PathBuf::from).filter(|p| is_zip(p)).collect();
+                let folders: Vec<PathBuf> = paths.iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+                let mut cols = Vec::new();
+                if !zips.is_empty() {
+                    let dest = PathBuf::from(
+                        destination.as_deref().filter(|d| !d.trim().is_empty()).ok_or_else(|| anyhow!("choose a folder to extract the Takeout zips into"))?,
+                    );
+                    sources::takeout::extract(&zips, &dest, |z, n, name| {
+                        self.status(format!("Extracting zip {z} of {n}: {name}"), z, n, false)
+                    })?;
+                    cols.extend(sources::takeout::read(&dest)?);
+                }
+                for f in folders {
+                    cols.extend(sources::takeout::read(&f)?);
+                }
+                if cols.is_empty() {
+                    return Err(anyhow!("choose a Takeout folder or .zip files"));
+                }
+                cols
+            }
         };
-        status(format!("Scanning {}", folder.display()), 0, 0, false);
+        let mut added = 0;
+        let mut missing = 0;
+        for col in collections {
+            missing += col.missing;
+            let folder_id = self.catalog.add_folder_labeled(&col.root, Some(&col.label))?;
+            let found = if col.scan_all {
+                scan(&col.root)
+            } else {
+                let by_path: HashMap<PathBuf, &sources::ExternalItem> = col.items.iter().map(|i| (i.path.clone(), i)).collect();
+                let mut photos = group_files(col.items.iter().map(|i| i.path.clone()));
+                for p in &mut photos {
+                    if let Some(item) = by_path.get(&p.path) {
+                        p.flags = Some((item.pick, item.rating));
+                        p.display_name = item.display_name.clone();
+                        p.meta = item.capture_time.map(|t| meta::Meta { capture_time: Some(t), orientation: 1, ..Default::default() });
+                    }
+                }
+                photos
+            };
+            added += self.insert_new(folder_id, found)?;
+        }
+        self.regroup.store(true, Ordering::SeqCst);
+        (self.emit)(Event::CatalogChanged);
+        if missing > 0 {
+            (self.emit)(Event::Error {
+                message: format!(
+                    "{missing} photo(s) listed in the {} are not on this computer (offline drive or cloud-only originals) and were skipped.",
+                    source.name()
+                ),
+            });
+        }
+        self.status(format!("Imported {added} photos from the {}", source.name()), added, added, true);
+        Ok(added)
+    }
+
+    fn status(&self, message: String, done: usize, total: usize, finished: bool) {
+        (self.emit)(Event::ImportStatus { message, done, total, finished });
+    }
+
+    /// Insert files not yet in `folder_id`, reading header metadata in
+    /// parallel, in chunks so the grid fills in during big imports.
+    fn insert_new(&self, folder_id: i64, found: Vec<NewPhoto>) -> Result<usize> {
         let known = self.catalog.known_paths(folder_id)?;
-        let found = scan(folder);
         let mut fresh: Vec<NewPhoto> = found.into_iter().filter(|p| !known.contains(&path_str(&p.path))).collect();
         let total = fresh.len();
         let mut added = 0;
@@ -162,8 +247,14 @@ impl Library {
             // Header metadata only (a few KB per file), in parallel.
             use rayon::prelude::*;
             chunk.par_iter_mut().for_each(|p| {
-                if p.kind != Kind::Heic {
-                    p.meta = util::guard(|| Ok(meta::read(&p.path, p.kind, &util::map_file(&p.path)?))).ok();
+                {
+                    let fallback = p.meta.take();
+                    let mut m = util::guard(|| Ok(meta::read(&p.path, p.kind, &util::map_file(&p.path)?))).ok();
+                    // A capture time supplied by the source app fills gaps in EXIF.
+                    if let (Some(m), Some(f)) = (m.as_mut(), &fallback) {
+                        m.capture_time = m.capture_time.or(f.capture_time);
+                    }
+                    p.meta = m.or(fallback);
                 }
             });
             let ids = self.catalog.insert_photos(folder_id, chunk, |p| sidecar::read(p))?;
@@ -172,11 +263,8 @@ impl Library {
                 self.enqueue(id);
             }
             (self.emit)(Event::CatalogChanged);
-            status(format!("Added {added} of {total}"), added, total, false);
+            self.status(format!("Added {added} of {total}"), added, total, false);
         }
-        self.regroup.store(true, Ordering::SeqCst);
-        (self.emit)(Event::CatalogChanged);
-        status(format!("Imported {added} new photos from {}", folder.display()), added, total, true);
         Ok(added)
     }
 
@@ -254,7 +342,7 @@ impl Library {
         };
         let m = util::guard(|| Ok(meta::read(&path, p.kind, &buf))).unwrap_or(meta::Meta { orientation: 1, ..Default::default() });
         drop(buf);
-        if p.kind == Kind::Heic {
+        if p.kind == Kind::Heic && !crate::heic::SUPPORTED {
             self.catalog.set_processed(id, &m, None, None, None)?;
             return Ok(());
         }
@@ -291,7 +379,7 @@ impl Library {
             return Ok(b);
         }
         let photo = self.catalog.photo(id)?.ok_or_else(|| anyhow!("no photo {id}"))?;
-        if photo.kind == Kind::Heic {
+        if photo.kind == Kind::Heic && !crate::heic::SUPPORTED {
             return Err(anyhow!("no HEIC preview"));
         }
         if let (true, Some(e)) = (photo.processed, &photo.error) {
@@ -312,9 +400,8 @@ impl Library {
         if photo.kind == Kind::Jpeg && (full || std::fs::metadata(&photo.path).map(|m| m.len() < 6_000_000).unwrap_or(false)) {
             return Ok(std::fs::read(&photo.path)?);
         }
-        if photo.kind == Kind::Heic {
-            // WebKit (macOS) decodes HEIC natively; elsewhere the UI shows a placeholder.
-            return Ok(std::fs::read(&photo.path)?);
+        if photo.kind == Kind::Heic && !crate::heic::SUPPORTED {
+            return Err(anyhow!("HEIC previews are available on macOS only in this version"));
         }
         let cache = self.cache_file("previews", id, if full { "_full" } else { "" });
         if let Ok(b) = std::fs::read(&cache) {
@@ -526,6 +613,10 @@ pub fn builtin_presets() -> Vec<Preset> {
     ]
 }
 
+fn is_zip(p: &Path) -> bool {
+    p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+}
+
 /// Supported files under `root`, skipping hidden folders and our own sidecars.
 fn walk(root: &Path) -> impl Iterator<Item = PathBuf> {
     walkdir::WalkDir::new(root)
@@ -541,10 +632,15 @@ fn walk(root: &Path) -> impl Iterator<Item = PathBuf> {
 /// Scan a folder into catalog items, stacking RAW+JPEG pairs (same folder,
 /// same base name) into one item with the RAW as primary.
 pub fn scan(root: &Path) -> Vec<NewPhoto> {
+    group_files(walk(root))
+}
+
+/// Turn a list of supported files into catalog items, stacking RAW+JPEG pairs.
+pub fn group_files(files: impl IntoIterator<Item = PathBuf>) -> Vec<NewPhoto> {
     let mut groups: HashMap<(PathBuf, String), Vec<(PathBuf, Kind)>> = HashMap::new();
     let mut order = Vec::new();
-    for p in walk(root) {
-        let kind = formats::classify(&p).unwrap();
+    for p in files {
+        let Some(kind) = formats::classify(&p) else { continue };
         let key = (
             p.parent().map(Path::to_path_buf).unwrap_or_default(),
             p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default(),
@@ -581,7 +677,7 @@ pub fn scan(root: &Path) -> Vec<NewPhoto> {
             }
             let pair = paired.filter(|(r, _)| *r == i).map(|(_, j)| files[j].0.clone());
             let (size, mtime) = stat(path);
-            out.push(NewPhoto { path: path.clone(), kind: *kind, pair, size, mtime, meta: None });
+            out.push(NewPhoto { path: path.clone(), kind: *kind, pair, size, mtime, meta: None, display_name: None, flags: None });
         }
     }
     out
@@ -696,6 +792,30 @@ mod tests {
         assert_eq!(names, ["L1.DNG", "L2.jpg", "L3.dng"]);
         assert!(items[0].pair.as_ref().unwrap().ends_with("L1.JPG"));
         assert!(items[1].pair.is_none());
+    }
+
+    #[test]
+    fn imports_lightroom_catalog_with_flags() {
+        let d = tempfile::tempdir().unwrap();
+        let shoot = d.path().join("2024/2024-05-01");
+        std::fs::create_dir_all(&shoot).unwrap();
+        // Content is irrelevant to the catalog step (these get flagged unreadable later).
+        std::fs::write(shoot.join("L1000001.DNG"), b"x").unwrap();
+        std::fs::write(shoot.join("L1000002.DNG"), b"x").unwrap();
+        let cat = d.path().join("Cat.lrcat");
+        crate::sources::lightroom::tests::fake_catalog(&cat, d.path());
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), Box::new(|_| {})).unwrap();
+        let n = lib.import_external_blocking(&ExternalSource::Lightroom { path: path_str(&cat) }).unwrap();
+        assert_eq!(n, 2);
+        let photos = lib.photos(None).unwrap();
+        let a = photos.iter().find(|p| p.file_name == "L1000001.DNG").unwrap();
+        assert_eq!((a.pick, a.rating, a.capture_time), (1, 4, Some(1714564800000)));
+        assert_eq!(photos.iter().find(|p| p.file_name == "L1000002.DNG").unwrap().pick, -1);
+        let f = &lib.folders().unwrap()[0];
+        assert_eq!(f.label.as_deref(), Some("Lightroom · Cat · Pictures"));
+        // Re-importing adds nothing.
+        assert_eq!(lib.import_external_blocking(&ExternalSource::Lightroom { path: path_str(&cat) }).unwrap(), 0);
     }
 
     #[test]

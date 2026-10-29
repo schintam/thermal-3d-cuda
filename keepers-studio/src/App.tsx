@@ -583,7 +583,7 @@ export default function App() {
               </li>
               {folders.map((f) => (
                 <li key={f.id} className={folderId === f.id ? "on" : ""} onClick={() => setFolderId(f.id)} title={f.path}>
-                  {f.path.split(/[\\/]/).filter(Boolean).pop() ?? f.path} <span>{f.count}</span>
+                  <em>{f.label ?? f.path.split(/[\\/]/).filter(Boolean).pop() ?? f.path}</em> <span>{f.count}</span>
                 </li>
               ))}
             </ul>

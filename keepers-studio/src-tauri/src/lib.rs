@@ -5,6 +5,7 @@ use keepers_core::catalog::{Folder, Photo};
 use keepers_core::develop::Edits;
 use keepers_core::export::{self, ExportSettings};
 use keepers_core::library::{CopyOptions, Preset};
+use keepers_core::sources::ExternalSource;
 use keepers_core::{Event, Library};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -73,6 +74,43 @@ async fn photos(app: State<'_, App>, folder_id: Option<i64>) -> Res<Vec<Photo>> 
 #[tauri::command]
 fn import_folder(app: State<'_, App>, path: String, copy: Option<CopyOptions>) {
     app.lib.import(PathBuf::from(path), copy);
+}
+
+#[tauri::command]
+fn import_external(app: State<'_, App>, source: ExternalSource) {
+    app.lib.import_external(source);
+}
+
+/// Library locations of other apps found at their default paths.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestedSources {
+    lightroom: Vec<String>,
+    apple_photos: Option<String>,
+    icloud_photos: Option<String>,
+}
+
+#[tauri::command]
+fn suggested_sources(handle: tauri::AppHandle) -> SuggestedSources {
+    let pictures = handle.path().picture_dir().ok();
+    let mut lightroom = Vec::new();
+    if let Some(dir) = pictures.as_ref().map(|p| p.join("Lightroom")) {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("lrcat")) {
+                    lightroom.push(p.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    lightroom.sort();
+    let icloud = pictures.as_ref().map(|p| p.join("iCloud Photos").join("Photos")).filter(|p| p.is_dir());
+    SuggestedSources {
+        lightroom,
+        apple_photos: keepers_core::sources::apple_photos::default_library().map(|p| p.to_string_lossy().into_owned()),
+        icloud_photos: icloud.map(|p| p.to_string_lossy().into_owned()),
+    }
 }
 
 #[tauri::command]
@@ -284,6 +322,8 @@ pub fn run() {
             folders,
             photos,
             import_folder,
+            import_external,
+            suggested_sources,
             remove_folder,
             set_pick,
             set_rating,

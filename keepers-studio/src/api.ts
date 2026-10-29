@@ -38,6 +38,19 @@ export interface Folder {
   id: number;
   path: string;
   count: number;
+  /** Set for folders imported from another app's library. */
+  label: string | null;
+}
+
+export type ExternalSource =
+  | { kind: "lightroom"; path: string }
+  | { kind: "applePhotos"; path: string }
+  | { kind: "takeout"; paths: string[]; destination: string | null };
+
+export interface SuggestedSources {
+  lightroom: string[];
+  applePhotos: string | null;
+  icloudPhotos: string | null;
 }
 
 export interface Hsl {
@@ -144,6 +157,8 @@ export const api = {
   folders: () => invoke<Folder[]>("folders"),
   photos: (folderId: number | null) => invoke<Photo[]>("photos", { folderId }),
   importFolder: (path: string, copy: CopyOptions | null) => invoke<void>("import_folder", { path, copy }),
+  importExternal: (source: ExternalSource) => invoke<void>("import_external", { source }),
+  suggestedSources: () => invoke<SuggestedSources>("suggested_sources"),
   removeFolder: (id: number) => invoke<void>("remove_folder", { id }),
   setPick: (ids: number[], pick: number) => invoke<Photo[]>("set_pick", { ids, pick }),
   setRating: (ids: number[], rating: number) => invoke<Photo[]>("set_rating", { ids, rating }),

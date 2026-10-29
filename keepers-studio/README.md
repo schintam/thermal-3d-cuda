@@ -6,7 +6,7 @@ Cull and develop photos locally, in one cross-platform desktop app. No account, 
 
 ```
 keepers-studio/
-├── crates/keepers-core/   Engine: catalog, import, previews, scores, bursts, develop, export (Rust, 41 tests)
+├── crates/keepers-core/   Engine: catalog, import, previews, scores, bursts, develop, export (Rust, 50 tests)
 ├── src-tauri/             Desktop shell: commands, image protocols, events
 └── src/                   UI (React)
 ```
@@ -55,6 +55,10 @@ cargo run -p keepers-core --release --example make_shoot -- C:\temp\shoot
 1. **Import.** Use **Import…** (Ctrl+I) or drop a folder on the window.
    - *Add in place*: the catalog points at the files where they are.
    - *Copy to folder*: copies files (e.g. off an SD card) into dated subfolders and verifies each copy. Nothing is ever overwritten.
+
+   - *Lightroom Classic*: choose your `.lrcat` catalog. Every photo is added where it already lives, with its flags and star ratings. Virtual copies are skipped, and Lightroom develop settings aren't carried over. The catalog is only read, so it's fine if Lightroom is open.
+   - *Apple Photos* (macOS): choose your `.photoslibrary` (older iPhoto libraries work too). Originals are imported in place with their real file names; favourites become picks; trashed and hidden photos are skipped. HEIC photos are decoded by macOS, so they get full previews and develop. Photos kept only in iCloud have to be downloaded first. On Windows, iCloud Photos syncs to a normal folder (`Pictures\iCloud Photos\Photos`); import that as a folder.
+   - *Google Photos*: Google doesn't let other apps read a Photos library directly; since 2025 its API only exposes photos an app uploaded itself. Instead, export with [Google Takeout](https://takeout.google.com) (select only Google Photos), then choose the downloaded zips. They're extracted (resumably, never overwriting anything), photos that appear in both albums and year folders are kept once, favourites become picks, and Google's metadata fills in missing capture dates.
 
    The grid fills in as files are scanned. Previews and scores are built in the background, and visible thumbnails jump the queue.
 2. **Cull.** All of this is keyboard-first (press `?` in the app for the full list):
@@ -109,6 +113,8 @@ These were picked so the build could go ahead. All of them are easy to change.
 - **Export doesn't copy EXIF** (capture date, camera) into the output files yet.
 - **ICC / Display P3:** output is sRGB and the UI renders in the webview's sRGB.
 - **Watermarks** on export.
+- **HEIC on Windows**: still a placeholder. macOS decodes HEIC through the OS; Windows would need a bundled HEVC decoder, which raises patent-licensing questions.
+- **Lightroom develop settings** are not translated on import. Picks, rejects and stars are.
 - **Not yet validated on real camera files.** The RAW path is tested end to end on *synthetic* DNGs (real Bayer data, white balance, colour matrix, orientation, embedded previews, lens opcodes, corrupt files). This environment couldn't download real samples from any camera. Running `inspect` on your Q2 folder is the next step (§8).
 
 ### Licensing flag (spec §9)

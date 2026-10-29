@@ -122,7 +122,13 @@ pub fn load(path: &Path, kind: Kind, orientation: u16, max_edge: Option<usize>) 
                 None => lin,
             })
         }
-        Kind::Heic => bail!("HEIC files can be culled but not developed in this version"),
+        Kind::Heic => {
+            let lin = from_rendered(&crate::heic::decode(path, 0)?).orient(orientation);
+            Ok(match max_edge {
+                Some(m) => lin.downscale(m),
+                None => lin,
+            })
+        }
     })
 }
 

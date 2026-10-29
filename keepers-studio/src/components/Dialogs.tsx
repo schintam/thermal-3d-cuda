@@ -1,6 +1,6 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
-import { CopyOptions, ExportSettings, api, modLabel } from "../api";
+import { CopyOptions, ExportSettings, ExternalSource, SuggestedSources, api, modLabel } from "../api";
 
 function useStored<T>(key: string, initial: T): [T, (v: T) => void] {
   const [v, setV] = useState<T>(() => {
@@ -27,7 +27,221 @@ async function pickFolder(title: string): Promise<string | null> {
   return typeof r === "string" ? r : null;
 }
 
+type ImportFrom = "folder" | "lightroom" | "apple" | "takeout";
+
+const IMPORT_TABS: { key: ImportFrom; label: string }[] = [
+  { key: "folder", label: "Folder or card" },
+  { key: "lightroom", label: "Lightroom Classic" },
+  { key: "apple", label: "Apple Photos" },
+  { key: "takeout", label: "Google Photos" },
+];
+
 export function ImportDialog({ onClose, initialSource }: { onClose: () => void; initialSource?: string }) {
+  const [from, setFrom] = useState<ImportFrom>(() => {
+    const s = initialSource?.toLowerCase() ?? "";
+    if (s.endsWith(".lrcat")) return "lightroom";
+    if (s.endsWith(".photoslibrary")) return "apple";
+    if (s.endsWith(".zip")) return "takeout";
+    return "folder";
+  });
+  const tabs = (
+    <div className="segmented import-tabs">
+      {IMPORT_TABS.map((t) => (
+        <button key={t.key} className={from === t.key ? "on" : ""} onClick={() => setFrom(t.key)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+  return from === "folder" ? (
+    <FolderImport onClose={onClose} initialSource={initialSource} tabs={tabs} />
+  ) : (
+    <ExternalImport key={from} from={from} onClose={onClose} initialSource={initialSource} tabs={tabs} />
+  );
+}
+
+async function pickFile(title: string, name: string, extensions: string[], multiple = false): Promise<string[]> {
+  const r = await openDialog({ title, multiple, directory: false, filters: [{ name, extensions }] });
+  if (r == null) return [];
+  return Array.isArray(r) ? r : [r];
+}
+
+function ExternalImport({
+  from,
+  onClose,
+  initialSource,
+  tabs,
+}: {
+  from: Exclude<ImportFrom, "folder">;
+  onClose: () => void;
+  initialSource?: string;
+  tabs: React.ReactNode;
+}) {
+  const [path, setPath] = useState(initialSource ?? "");
+  const [zips, setZips] = useState<string[]>(initialSource?.toLowerCase().endsWith(".zip") ? [initialSource] : []);
+  const [dest, setDest] = useStored("keepers.takeoutDest", { folder: "" });
+  const [suggested, setSuggested] = useState<SuggestedSources | null>(null);
+  const [platform, setPlatform] = useState("");
+
+  useEffect(() => {
+    api.suggestedSources().then((s) => {
+      setSuggested(s);
+      if (!path) {
+        if (from === "lightroom" && s.lightroom.length) setPath(s.lightroom[0]);
+        if (from === "apple" && s.applePhotos) setPath(s.applePhotos);
+      }
+    });
+    api.settings().then((st) => {
+      setPlatform(st.platform);
+      if (!dest.folder && st.picturesDir) setDest({ folder: st.picturesDir + (st.platform === "windows" ? "\\" : "/") + "Google Photos" });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const source: ExternalSource | null =
+    from === "lightroom"
+      ? path
+        ? { kind: "lightroom", path }
+        : null
+      : from === "apple"
+        ? path
+          ? { kind: "applePhotos", path }
+          : null
+        : zips.length || path
+          ? { kind: "takeout", paths: zips.length ? zips : [path], destination: zips.length ? dest.folder : null }
+          : null;
+
+  const start = () => {
+    if (!source) return;
+    api.importExternal(source);
+    onClose();
+  };
+
+  return (
+    <Modal title="Import photos" onClose={onClose}>
+      {tabs}
+      {from === "lightroom" && (
+        <>
+          <div className="field">
+            <label>Lightroom Classic catalog (.lrcat)</label>
+            <div className="row">
+              <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="Choose a catalog…" />
+              <button onClick={async () => setPath((await pickFile("Choose a Lightroom catalog", "Lightroom catalog", ["lrcat"]))[0] ?? path)}>
+                Browse…
+              </button>
+            </div>
+            {suggested && suggested.lightroom.length > 1 && (
+              <div className="segmented">
+                {suggested.lightroom.map((c) => (
+                  <button key={c} className={c === path ? "on" : ""} onClick={() => setPath(c)}>
+                    {c.split(/[\\/]/).pop()}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <p className="hint">
+            Brings in every photo in the catalog where it already lives, with its flags (pick/reject) and star ratings. Virtual
+            copies are skipped. Lightroom develop settings can't be carried over. The catalog is only read, never changed —
+            it's fine if Lightroom is open. For Lightroom (cloud), use its "Export originals" and import that folder.
+          </p>
+        </>
+      )}
+      {from === "apple" && (
+        <>
+          <div className="field">
+            <label>Photos library</label>
+            <div className="row">
+              <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="~/Pictures/Photos Library.photoslibrary" />
+              <button
+                onClick={async () =>
+                  setPath((await pickFile("Choose a Photos library", "Photos library", ["photoslibrary", "photolibrary"]))[0] ?? path)
+                }
+              >
+                Browse…
+              </button>
+            </div>
+          </div>
+          {platform === "windows" ? (
+            <p className="hint">
+              Apple Photos libraries live on a Mac. On Windows, iCloud for Windows syncs your photos to a normal folder
+              {suggested?.icloudPhotos ? (
+                <>
+                  {" "}
+                  (<code>{suggested.icloudPhotos}</code>)
+                </>
+              ) : (
+                " (usually Pictures\\iCloud Photos\\Photos)"
+              )}{" "}
+              — import that with <b>Folder or card</b>.
+            </p>
+          ) : (
+            <p className="hint">
+              Imports your originals in place with their real file names; favourites become picks; trashed and hidden photos are
+              skipped. The library is only read. macOS may ask for permission to access Photos — allow it. Photos stored only in
+              iCloud ("Optimise Mac Storage") can't be imported until they're downloaded. Older iPhoto libraries work too.
+            </p>
+          )}
+        </>
+      )}
+      {from === "takeout" && (
+        <>
+          <p className="hint">
+            Google doesn't let other apps read your Google Photos library directly. Export it with{" "}
+            <b>Google Takeout</b> (takeout.google.com → select only Google Photos), download the zip files, then choose them
+            here. Favourites become picks; capture dates come from Google's metadata when a photo has none.
+          </p>
+          <div className="field">
+            <label>Takeout zip files</label>
+            <div className="row">
+              <input readOnly value={zips.length ? `${zips.length} zip file${zips.length > 1 ? "s" : ""} selected` : ""} placeholder="Choose takeout-*.zip…" />
+              <button
+                onClick={async () => {
+                  const z = await pickFile("Choose Takeout zips", "Zip archives", ["zip"], true);
+                  if (z.length) setZips(z);
+                }}
+              >
+                Choose zips…
+              </button>
+            </div>
+          </div>
+          {zips.length > 0 ? (
+            <div className="field">
+              <label>Extract photos to</label>
+              <div className="row">
+                <input value={dest.folder} onChange={(e) => setDest({ folder: e.target.value })} />
+                <button
+                  onClick={async () => {
+                    const d = await pickFolder("Extract Google Photos to…");
+                    if (d) setDest({ folder: d });
+                  }}
+                >
+                  Browse…
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="field">
+              <label>…or an already-extracted Takeout folder</label>
+              <div className="row">
+                <input value={path} onChange={(e) => setPath(e.target.value)} />
+                <button onClick={async () => setPath((await pickFolder("Choose the extracted Takeout folder")) ?? path)}>Browse…</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      <div className="actions">
+        <button onClick={onClose}>Cancel</button>
+        <button className="primary" disabled={!source || (from === "takeout" && zips.length > 0 && !dest.folder)} onClick={start}>
+          Import
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function FolderImport({ onClose, initialSource, tabs }: { onClose: () => void; initialSource?: string; tabs: React.ReactNode }) {
   const [source, setSource] = useState(initialSource ?? "");
   const [opts, setOpts] = useStored("keepers.import", {
     mode: "reference" as "reference" | "copy",
@@ -60,6 +274,7 @@ export function ImportDialog({ onClose, initialSource }: { onClose: () => void; 
 
   return (
     <Modal title="Import photos" onClose={onClose}>
+      {tabs}
       <div className="field">
         <label>Source folder or card</label>
         <div className="row">

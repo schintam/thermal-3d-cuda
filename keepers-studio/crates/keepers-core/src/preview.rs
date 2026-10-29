@@ -8,7 +8,7 @@
 use crate::embedded::{self, JpegRef};
 use crate::formats::Kind;
 use crate::util::{self, guard};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use image::{DynamicImage, ImageBuffer};
 use std::path::Path;
 
@@ -46,7 +46,11 @@ fn load_inner(src: &Source, want: u32) -> Result<Loaded> {
             let img = if want > 0 && img.width().max(img.height()) > want { img.thumbnail(want, want) } else { img };
             Ok(oriented(img, w, h, src.orientation))
         }
-        Kind::Heic => bail!("HEIC previews are not supported on this platform yet"),
+        Kind::Heic => {
+            let img = crate::heic::decode(src.path, want)?;
+            let (w, h) = (img.width(), img.height());
+            Ok(oriented(img, w, h, src.orientation))
+        }
         Kind::Raw => load_raw(src, want),
     }
 }
